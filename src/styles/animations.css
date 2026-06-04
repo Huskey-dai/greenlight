@@ -1,0 +1,36 @@
+/* Blink animations for traffic light states */
+
+/* WORKING — yellow, 1Hz, ease-in-out */
+@keyframes blink-working {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* NEEDS_INPUT — red, 2Hz, urgent */
+@keyframes blink-needs-input {
+  0%, 100% { opacity: 1; }
+  30% { opacity: 0.15; }
+}
+
+/* Reduced motion: slow fade between dim and bright (3-second cycle) */
+@keyframes slow-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Animation classes */
+.light--working {
+  animation: blink-working 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.light--needs-input {
+  animation: blink-needs-input 0.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Respect reduced motion preference (WCAG 2.2) */
+@media (prefers-reduced-motion: reduce) {
+  .light--working,
+  .light--needs-input {
+    animation: slow-pulse 3s ease-in-out infinite;
+  }
+}

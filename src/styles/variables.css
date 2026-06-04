@@ -1,0 +1,42 @@
+/* Theme-aware CSS variables */
+:root,
+:root[data-theme="light"] {
+  --bg-primary: #FFFFFF;
+  --bg-secondary: #F3F4F6;
+  --bg-hover: #F0F0F0;
+  --text-primary: #111827;
+  --text-secondary: #6B7280;
+  --text-tertiary: #94A3B8;
+  --border-color: rgba(0, 0, 0, 0.1);
+  --popup-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  --popup-border: #E2E8F0;
+  --button-bg: #F1F5F9;
+  --button-hover: #E2E8F0;
+  --scrollbar-thumb: #CBD5E1;
+
+  /* Status colors (constant across themes) */
+  --color-idle: #22C55E;
+  --color-working: #EAB308;
+  --color-needs-input: #EF4444;
+  --color-error: #EF4444;
+  --color-unknown: #6B7280;
+
+  /* Light border for traffic light */
+  --light-border: rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="dark"] {
+  --bg-primary: #1F2937;
+  --bg-secondary: #111827;
+  --bg-hover: #374151;
+  --text-primary: #F9FAFB;
+  --text-secondary: #CBD5E1;
+  --text-tertiary: #64748B;
+  --border-color: rgba(255, 255, 255, 0.1);
+  --popup-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --popup-border: #334155;
+  --button-bg: #334155;
+  --button-hover: #475569;
+  --scrollbar-thumb: #475569;
+  --light-border: rgba(255, 255, 255, 0.1);
+}
