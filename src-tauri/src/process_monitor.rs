@@ -25,8 +25,22 @@ impl CliKind {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Codex => "Codex CLI",
+            Self::Codex => "Codex \u{5ba2}\u{6237}\u{7aef}",
             Self::ClaudeCode => "Claude Code",
+        }
+    }
+
+    fn detail(self) -> &'static str {
+        match self {
+            Self::Codex => "\u{5ba2}\u{6237}\u{7aef}\u{8fd0}\u{884c}\u{4e2d}",
+            Self::ClaudeCode => "CLI running",
+        }
+    }
+
+    fn default_state(self) -> SessionState {
+        match self {
+            Self::Codex => SessionState::Working,
+            Self::ClaudeCode => SessionState::Idle,
         }
     }
 
@@ -51,6 +65,7 @@ struct DiscoveredCliSession {
     id: String,
     label: String,
     detail: String,
+    state: SessionState,
     source: SourceType,
 }
 
@@ -86,13 +101,22 @@ async fn sync_cli_processes(
     for discovered_session in discovered {
         if let Some(existing) = app_state.sessions.get_mut(&discovered_session.id) {
             existing.updated_at = now;
-            if existing.detail.is_none() {
+            if existing.label != discovered_session.label {
+                existing.label = discovered_session.label;
+                changed = true;
+            }
+            if existing.state == SessionState::Idle && discovered_session.state == SessionState::Working {
+                existing.state = discovered_session.state;
+                changed = true;
+            }
+            if existing.detail.is_none() || existing.detail.as_deref() == Some("CLI running") {
                 existing.detail = Some(discovered_session.detail);
+                changed = true;
             }
         } else {
             app_state.upsert_session(
                 discovered_session.id,
-                SessionState::Idle,
+                discovered_session.state,
                 Some(discovered_session.label),
                 Some(discovered_session.detail),
                 discovered_session.source,
@@ -191,7 +215,8 @@ fn discover_cli_sessions_from_processes(
         sessions.push(DiscoveredCliSession {
             id,
             label: kind.label().to_string(),
-            detail: "CLI running".to_string(),
+            detail: kind.detail().to_string(),
+            state: kind.default_state(),
             source: kind.source(),
         });
     }
@@ -454,5 +479,7 @@ mod tests {
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "process-codex-10");
+        assert_eq!(sessions[0].label, "Codex \u{5ba2}\u{6237}\u{7aef}");
+        assert_eq!(sessions[0].state, SessionState::Working);
     }
 }

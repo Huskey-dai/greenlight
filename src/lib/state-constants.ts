@@ -19,6 +19,28 @@ export interface SessionsPayload {
   aggregate_state: string;
 }
 
+export interface DiagnosticFile {
+  label: string;
+  path: string;
+  exists: boolean;
+}
+
+export interface Diagnostics {
+  version: string;
+  http_port?: number;
+  port_file: string;
+  port_file_exists: boolean;
+  status_file: string;
+  status_file_exists: boolean;
+  process_monitor_enabled: boolean;
+  sessions_count: number;
+  process_sessions_count: number;
+  by_state: Record<string, number>;
+  by_source: Record<string, number>;
+  latest_update?: string;
+  hook_files: DiagnosticFile[];
+}
+
 export const STATE_COLORS: Record<DisplayState, string> = {
   IDLE: '#22C55E',
   WORKING: '#EAB308',

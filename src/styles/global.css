@@ -107,6 +107,128 @@ body {
   color: var(--text-primary);
 }
 
+.popup-header__diagnostics {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.popup-header__diagnostics:hover,
+.popup-header__diagnostics--active {
+  background: var(--button-hover);
+  color: var(--text-primary);
+}
+
+/* Diagnostics */
+.diagnostics-panel {
+  padding: 10px 16px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.diagnostics-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.diagnostics-panel__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.diagnostics-panel__refresh {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--button-bg);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.diagnostics-panel__refresh:hover {
+  background: var(--button-hover);
+  color: var(--text-primary);
+}
+
+.diagnostics-panel__refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.diagnostics-panel__empty,
+.diagnostics-panel__error {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.diagnostics-panel__error {
+  color: var(--color-error);
+}
+
+.diagnostics-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.diagnostics-row,
+.diagnostics-hook {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.diagnostics-row span,
+.diagnostics-hook span {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.diagnostics-row strong,
+.diagnostics-hook strong {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostics-path {
+  margin-top: -4px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostics-hooks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-color);
+}
+
 /* Session list */
 .session-list {
   list-style: none;

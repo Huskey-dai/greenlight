@@ -34,7 +34,7 @@ export function SessionCard({ session, expanded = false, onToggle }: SessionCard
         )}
       </div>
       <span className="session-card__state">
-        {session.state}
+        {STATE_LABELS[session.state]}
       </span>
     </div>
   );

@@ -6,9 +6,16 @@ import { TrafficLight } from './TrafficLight';
 interface HeaderProps {
   aggregateState: DisplayState;
   sessionCount: number;
+  diagnosticsOpen: boolean;
+  onToggleDiagnostics: () => void;
 }
 
-export function Header({ aggregateState, sessionCount }: HeaderProps) {
+export function Header({
+  aggregateState,
+  sessionCount,
+  diagnosticsOpen,
+  onToggleDiagnostics,
+}: HeaderProps) {
   const startDrag = (event: MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     void getCurrentWindow().startDragging();
@@ -33,6 +40,16 @@ export function Header({ aggregateState, sessionCount }: HeaderProps) {
               : `${sessionCount} \u4e2a\u4f1a\u8bdd`}
         </span>
       </div>
+      <button
+        className={`popup-header__diagnostics${diagnosticsOpen ? ' popup-header__diagnostics--active' : ''}`}
+        type="button"
+        aria-label="Diagnostics"
+        title="Diagnostics"
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={onToggleDiagnostics}
+      >
+        ?
+      </button>
       <button
         className="popup-header__close"
         type="button"

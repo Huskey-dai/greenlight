@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::path::PathBuf;
 use tauri::Emitter;
 use tauri::Manager;
 use tokio::sync::RwLock;
@@ -87,6 +88,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_sessions,
             get_aggregate_state,
+            get_diagnostics,
             remove_session,
             rename_session,
         ])
@@ -110,6 +112,114 @@ async fn get_aggregate_state(
 ) -> Result<String, String> {
     let app_state = state.read().await;
     Ok(state::aggregate_state_string(&app_state.sessions))
+}
+
+#[derive(Debug, serde::Serialize)]
+struct Diagnostics {
+    version: &'static str,
+    http_port: Option<u16>,
+    port_file: String,
+    port_file_exists: bool,
+    status_file: String,
+    status_file_exists: bool,
+    process_monitor_enabled: bool,
+    sessions_count: usize,
+    process_sessions_count: usize,
+    by_state: std::collections::HashMap<String, usize>,
+    by_source: std::collections::HashMap<String, usize>,
+    latest_update: Option<String>,
+    hook_files: Vec<DiagnosticFile>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DiagnosticFile {
+    label: &'static str,
+    path: String,
+    exists: bool,
+}
+
+#[tauri::command]
+async fn get_diagnostics(
+    state: tauri::State<'_, Arc<RwLock<state::AppState>>>,
+) -> Result<Diagnostics, String> {
+    let app_state = state.read().await;
+    let mut by_state = std::collections::HashMap::new();
+    let mut by_source = std::collections::HashMap::new();
+    let mut latest_update = None;
+
+    for (session_id, session) in &app_state.sessions {
+        *by_state
+            .entry(state::state_to_string(&session.state))
+            .or_insert(0) += 1;
+        let source = match &session.source {
+            state::SourceType::Codex => "codex",
+            state::SourceType::ClaudeCode => "claude_code",
+        };
+        *by_source.entry(source.to_string()).or_insert(0) += 1;
+
+        let updated_at = session.updated_at.to_rfc3339();
+        if latest_update
+            .as_ref()
+            .map_or(true, |current: &String| updated_at > *current)
+        {
+            latest_update = Some(updated_at);
+        }
+
+        if session_id.starts_with("process-") {
+            *by_source.entry("detected_process".to_string()).or_insert(0) += 1;
+        }
+    }
+
+    let process_sessions_count = app_state
+        .sessions
+        .keys()
+        .filter(|session_id| session_id.starts_with("process-"))
+        .count();
+    let greenlight_dir = greenlight_dir();
+    let port_file = greenlight_dir.join("port.txt");
+    let status_file = greenlight_dir.join("status.json");
+    let hooks_dir = greenlight_dir.join("hooks");
+    let http_port = std::fs::read_to_string(&port_file)
+        .ok()
+        .and_then(|port| port.trim().parse::<u16>().ok());
+
+    Ok(Diagnostics {
+        version: env!("CARGO_PKG_VERSION"),
+        http_port,
+        port_file: port_file.display().to_string(),
+        port_file_exists: port_file.exists(),
+        status_file: status_file.display().to_string(),
+        status_file_exists: status_file.exists(),
+        process_monitor_enabled: true,
+        sessions_count: app_state.sessions.len(),
+        process_sessions_count,
+        by_state,
+        by_source,
+        latest_update,
+        hook_files: vec![
+            diagnostic_file("post-tool-use.js", hooks_dir.join("post-tool-use.js")),
+            diagnostic_file("needs-input.js", hooks_dir.join("needs-input.js")),
+            diagnostic_file("stop.js", hooks_dir.join("stop.js")),
+            diagnostic_file("api-client.js", hooks_dir.join("lib").join("api-client.js")),
+            diagnostic_file("session.js", hooks_dir.join("lib").join("session.js")),
+        ],
+    })
+}
+
+fn diagnostic_file(label: &'static str, path: PathBuf) -> DiagnosticFile {
+    DiagnosticFile {
+        label,
+        exists: path.exists(),
+        path: path.display().to_string(),
+    }
+}
+
+fn greenlight_dir() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".greenlight")
 }
 
 #[tauri::command]
