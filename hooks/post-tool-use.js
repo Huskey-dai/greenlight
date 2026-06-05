@@ -22,7 +22,7 @@ async function main() {
     // No valid input, continue without detail
   }
 
-  const sessionId = getSessionId();
+  const sessionId = getSessionId(hookData);
   const label = getSessionLabel();
 
   // Extract tool name for detail

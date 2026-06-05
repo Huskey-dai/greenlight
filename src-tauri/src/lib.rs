@@ -36,7 +36,17 @@ pub fn run() {
             .visible(false) // Hidden by default — toggled via tray icon
             .build()?;
 
-            // Start the HTTP server on a background task
+            // Restore sessions from status.json if it exists
+            let state_clone = app_state.clone();
+            tauri::async_runtime::block_on(async {
+                let mut state = state_clone.write().await;
+                if let Ok(sessions) = status_file::read_status_file().await {
+                    state.sessions = sessions;
+                    log::info!("Restored {} sessions from status.json", state.sessions.len());
+                }
+            });
+
+            // Start the HTTP server on a background task after restoring state.
             let state_clone = app_state.clone();
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -52,18 +62,8 @@ pub fn run() {
                 state::start_ttl_cleanup(state_clone, &handle).await;
             });
 
-            // Setup system tray (after popup window is created)
+            // Setup system tray (after popup window is created and state is restored)
             tray::setup_tray(app, app_state.clone())?;
-
-            // Restore sessions from status.json if it exists
-            let state_clone = app_state.clone();
-            tauri::async_runtime::block_on(async {
-                let mut state = state_clone.write().await;
-                if let Ok(sessions) = status_file::read_status_file().await {
-                    state.sessions = sessions;
-                    log::info!("Restored {} sessions from status.json", state.sessions.len());
-                }
-            });
 
             // Start theme listener
             theme::start_theme_listener(app.handle());

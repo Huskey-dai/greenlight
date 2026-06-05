@@ -22,7 +22,7 @@ async function main() {
     // No valid input
   }
 
-  const sessionId = getSessionId();
+  const sessionId = getSessionId(hookData);
   const label = getSessionLabel();
 
   // Extract error description for detail

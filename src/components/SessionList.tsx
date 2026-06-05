@@ -12,7 +12,7 @@ export function SessionList({ sessions }: SessionListProps) {
   const entries = Object.entries(sessions);
 
   return (
-    <div className="session-list" role="list" aria-label="活跃 AI 会话">
+    <div className="session-list" role="list" aria-label="\u6d3b\u8dc3 AI \u4f1a\u8bdd">
       {entries.map(([id, session]) => (
         <SessionCard
           key={id}

@@ -7,10 +7,21 @@
  */
 
 const { sendState, removeSession } = require('./lib/api-client');
-const { getSessionId, getSessionSource } = require('./lib/session');
+const { getSessionId, getSessionSource, clearSessionCache } = require('./lib/session');
 
 async function main() {
-  const sessionId = getSessionId();
+  let hookData = {};
+
+  try {
+    const input = await readStdin();
+    if (input) {
+      hookData = JSON.parse(input);
+    }
+  } catch {
+    // No valid input
+  }
+
+  const sessionId = getSessionId(hookData);
 
   // First set to IDLE
   await sendState(sessionId, 'IDLE', { source: getSessionSource() });
@@ -18,18 +29,18 @@ async function main() {
   // Then remove the session entirely
   await removeSession(sessionId);
 
-  // Clean up session cache file
-  const fs = require('fs');
-  const path = require('path');
-  const cacheFile = path.join(
-    process.env.TMPDIR || process.env.TEMP || '/tmp',
-    `greenlight-session-${process.pid}`
-  );
-  try {
-    fs.unlinkSync(cacheFile);
-  } catch {
-    // File may not exist
-  }
+  clearSessionCache(hookData);
+}
+
+function readStdin() {
+  return new Promise((resolve) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { data += chunk; });
+    process.stdin.on('end', () => resolve(data.trim()));
+    process.stdin.on('error', () => resolve(''));
+    setTimeout(() => resolve(data.trim()), 2000);
+  });
 }
 
 main()

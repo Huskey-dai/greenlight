@@ -97,13 +97,19 @@ fn parse_session(id: &str, value: &serde_json::Value) -> Option<Session> {
     let label = obj.get("label")?.as_str()?.to_string();
     let detail = obj.get("detail").and_then(|v| v.as_str()).map(String::from);
 
-    let started_at_str = obj.get("startedAt").and_then(|v| v.as_str());
+    let started_at_str = obj
+        .get("started_at")
+        .or_else(|| obj.get("startedAt"))
+        .and_then(|v| v.as_str());
     let started_at = started_at_str
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .unwrap_or_else(chrono::Utc::now);
 
-    let updated_at_str = obj.get("updatedAt").and_then(|v| v.as_str());
+    let updated_at_str = obj
+        .get("updated_at")
+        .or_else(|| obj.get("updatedAt"))
+        .and_then(|v| v.as_str());
     let updated_at = updated_at_str
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&chrono::Utc))
@@ -145,4 +151,49 @@ fn greenlight_dir() -> std::io::Result<PathBuf> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "Cannot find home directory"))?;
     Ok(PathBuf::from(home).join(".greenlight"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_session_accepts_snake_case_timestamps() {
+        let value = serde_json::json!({
+            "state": "WORKING",
+            "label": "Codex",
+            "detail": "Using shell",
+            "started_at": "2026-06-05T01:02:03Z",
+            "updated_at": "2026-06-05T01:03:04Z",
+            "source": "codex"
+        });
+
+        let session = parse_session("s1", &value).expect("session should parse");
+
+        assert_eq!(session.id, "s1");
+        assert_eq!(session.label, "Codex");
+        assert_eq!(session.state, SessionState::Working);
+        assert_eq!(session.started_at.to_rfc3339(), "2026-06-05T01:02:03+00:00");
+        assert_eq!(session.updated_at.to_rfc3339(), "2026-06-05T01:03:04+00:00");
+        assert!(matches!(session.source, SourceType::Codex));
+    }
+
+    #[test]
+    fn parse_session_accepts_camel_case_timestamps() {
+        let value = serde_json::json!({
+            "state": "NEEDS_INPUT",
+            "label": "Claude",
+            "startedAt": "2026-06-05T02:02:03Z",
+            "updatedAt": "2026-06-05T02:03:04Z",
+            "source": "claude_code"
+        });
+
+        let session = parse_session("s2", &value).expect("session should parse");
+
+        assert_eq!(session.id, "s2");
+        assert_eq!(session.state, SessionState::NeedsInput);
+        assert_eq!(session.started_at.to_rfc3339(), "2026-06-05T02:02:03+00:00");
+        assert_eq!(session.updated_at.to_rfc3339(), "2026-06-05T02:03:04+00:00");
+        assert!(matches!(session.source, SourceType::ClaudeCode));
+    }
 }

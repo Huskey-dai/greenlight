@@ -18,7 +18,12 @@ export function SessionCard({ session, expanded = false, onToggle }: SessionCard
       role="listitem"
       tabIndex={0}
       aria-expanded={expanded}
-      onKeyDown={(e) => { if (e.key === 'Enter') onToggle?.(); }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onToggle?.();
+        }
+      }}
       aria-label={`${session.label}: ${STATE_LABELS[session.state]}`}
     >
       <TrafficLight state={session.state} compact />

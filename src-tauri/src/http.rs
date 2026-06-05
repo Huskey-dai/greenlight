@@ -236,8 +236,8 @@ pub async fn start_server(
     }
 
     let app = Router::new()
-        .route("/api/sessions/:session_id/state", post(update_session_state))
-        .route("/api/sessions/:session_id", delete(remove_session))
+        .route("/api/sessions/{session_id}/state", post(update_session_state))
+        .route("/api/sessions/{session_id}", delete(remove_session))
         .route("/api/sessions", get(list_sessions))
         .route("/api/health", get(health_check))
         .with_state(server_state);
