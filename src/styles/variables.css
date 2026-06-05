@@ -3,16 +3,22 @@
 :root[data-theme="light"] {
   --bg-primary: #FFFFFF;
   --bg-secondary: #F3F4F6;
+  --bg-elevated: #FFFFFF;
   --bg-hover: #F0F0F0;
   --text-primary: #111827;
   --text-secondary: #6B7280;
   --text-tertiary: #94A3B8;
   --border-color: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(17, 24, 39, 0.14);
   --popup-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
   --popup-border: #E2E8F0;
   --button-bg: #F1F5F9;
   --button-hover: #E2E8F0;
   --scrollbar-thumb: #CBD5E1;
+  --status-idle-bg: rgba(34, 197, 94, 0.10);
+  --status-working-bg: rgba(234, 179, 8, 0.14);
+  --status-needs-input-bg: rgba(239, 68, 68, 0.12);
+  --status-error-bg: rgba(239, 68, 68, 0.15);
 
   /* Status colors (constant across themes) */
   --color-idle: #22C55E;
@@ -28,15 +34,21 @@
 :root[data-theme="dark"] {
   --bg-primary: #1F2937;
   --bg-secondary: #111827;
+  --bg-elevated: #263244;
   --bg-hover: #374151;
   --text-primary: #F9FAFB;
   --text-secondary: #CBD5E1;
   --text-tertiary: #64748B;
   --border-color: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.16);
   --popup-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   --popup-border: #334155;
   --button-bg: #334155;
   --button-hover: #475569;
   --scrollbar-thumb: #475569;
+  --status-idle-bg: rgba(34, 197, 94, 0.13);
+  --status-working-bg: rgba(234, 179, 8, 0.15);
+  --status-needs-input-bg: rgba(239, 68, 68, 0.14);
+  --status-error-bg: rgba(239, 68, 68, 0.18);
   --light-border: rgba(255, 255, 255, 0.1);
 }

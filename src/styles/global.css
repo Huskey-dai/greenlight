@@ -20,11 +20,19 @@ body {
   user-select: none;
 }
 
+html,
+body {
+  width: 100%;
+  height: 100%;
+}
+
 #root {
-  width: 320px;
+  width: 100%;
+  height: 100%;
   max-height: 500px;
   overflow-y: auto;
   overflow-x: hidden;
+  background: var(--bg-primary);
 }
 
 /* Scrollbar */
@@ -43,7 +51,10 @@ body {
 
 /* Popup container */
 .popup-container {
-  padding: 8px 0;
+  min-height: 500px;
+  padding: 0;
+  background:
+    linear-gradient(180deg, var(--bg-elevated) 0%, var(--bg-primary) 48%);
 }
 
 /* Popup header */
@@ -52,9 +63,11 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px 12px 16px;
+  min-height: 52px;
+  padding: 10px 10px 10px 16px;
   border-bottom: 1px solid var(--border-color);
   cursor: move;
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
 }
 
 .popup-header__main {
@@ -75,15 +88,19 @@ body {
 
 .popup-header__title {
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-primary);
 }
 
 .popup-header__count {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   margin-left: 8px;
   white-space: nowrap;
+  padding: 2px 7px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-primary);
 }
 
 .popup-header__close {
@@ -131,9 +148,12 @@ body {
 
 /* Diagnostics */
 .diagnostics-panel {
-  padding: 10px 16px 12px;
+  margin: 10px 12px 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
   border-bottom: 1px solid var(--border-color);
-  background: var(--bg-secondary);
+  background: var(--bg-elevated);
 }
 
 .diagnostics-panel__header {
@@ -145,9 +165,10 @@ body {
 }
 
 .diagnostics-panel__title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-primary);
+  letter-spacing: 0;
 }
 
 .diagnostics-panel__refresh {
@@ -183,7 +204,7 @@ body {
 
 .diagnostics-grid {
   display: grid;
-  gap: 6px;
+  gap: 7px;
 }
 
 .diagnostics-row,
@@ -232,25 +253,54 @@ body {
 /* Session list */
 .session-list {
   list-style: none;
+  padding: 10px 8px 12px;
 }
 
 /* Session card */
 .session-card {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 16px;
+  align-items: center;
+  gap: 9px;
+  min-height: 58px;
+  padding: 9px 10px;
+  margin: 0 0 6px;
   cursor: pointer;
-  transition: background 0.15s;
-  border-left: 3px solid transparent;
+  transition: background 0.15s, border-color 0.15s;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--bg-elevated);
 }
 
 .session-card:hover {
   background: var(--bg-hover);
+  border-color: var(--border-color);
+}
+
+.session-card--working {
+  background: var(--status-working-bg);
+  border-color: color-mix(in srgb, var(--color-working) 24%, transparent);
 }
 
 .session-card--needs-input {
-  border-left-color: var(--color-needs-input);
+  background: var(--status-needs-input-bg);
+  border-color: color-mix(in srgb, var(--color-needs-input) 28%, transparent);
+}
+
+.session-card--error {
+  background: var(--status-error-bg);
+  border-color: color-mix(in srgb, var(--color-error) 34%, transparent);
+}
+
+.session-card--idle {
+  background: var(--status-idle-bg);
+  border-color: color-mix(in srgb, var(--color-idle) 18%, transparent);
+}
+
+.session-card__light {
+  width: 14px;
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .session-card__info {
@@ -258,13 +308,27 @@ body {
   min-width: 0;
 }
 
+.session-card__topline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .session-card__label {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 650;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.session-card__source {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .session-card__detail {
@@ -278,11 +342,12 @@ body {
 
 .session-card__state {
   font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-tertiary);
-  align-self: center;
+  color: var(--text-secondary);
   flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
+  border: 1px solid var(--border-color);
 }
 
 /* Single session view */
@@ -290,21 +355,54 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 24px 16px;
+  justify-content: center;
+  min-height: 360px;
+  padding: 28px 18px 34px;
   text-align: center;
 }
 
-.single-session__label {
-  font-size: 14px;
+.single-session__light {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 112px;
+  height: 112px;
+  margin-bottom: 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+  border: 1px solid var(--border-color);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.single-session__status {
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 13px;
   font-weight: 600;
+}
+
+.single-session__label {
+  max-width: 260px;
+  font-size: 18px;
+  font-weight: 700;
   color: var(--text-primary);
-  margin-top: 8px;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.single-session__summary {
+  max-width: 260px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
 }
 
 .single-session__detail {
   font-size: 12px;
   color: var(--text-tertiary);
-  margin-top: 4px;
+  margin-top: 8px;
+  max-width: 260px;
+  overflow-wrap: anywhere;
 }
 
 /* Empty state */
@@ -312,14 +410,34 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 32px 16px;
+  justify-content: center;
+  min-height: 360px;
+  padding: 28px 16px;
   text-align: center;
+}
+
+.empty-state__light {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 92px;
+  height: 92px;
+  margin-bottom: 10px;
+  border-radius: 999px;
+  background: var(--status-idle-bg);
+  border: 1px solid color-mix(in srgb, var(--color-idle) 22%, transparent);
+}
+
+.empty-state__title {
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .empty-state__text {
   font-size: 12px;
-  color: var(--text-tertiary);
-  margin-top: 8px;
+  color: var(--text-secondary);
+  margin-top: 4px;
 }
 
 /* Skeleton loader */

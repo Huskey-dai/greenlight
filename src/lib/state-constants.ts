@@ -57,6 +57,19 @@ export const STATE_LABELS: Record<DisplayState, string> = {
   UNKNOWN: '\u672a\u8fde\u63a5',
 } as const;
 
+export const STATE_SUMMARIES: Record<DisplayState, string> = {
+  IDLE: '\u5f53\u524d\u6ca1\u6709\u9700\u8981\u5904\u7406\u7684\u4efb\u52a1',
+  WORKING: '\u6b63\u5728\u6267\u884c\u4efb\u52a1',
+  NEEDS_INPUT: '\u7b49\u5f85\u4f60\u786e\u8ba4\u6216\u6388\u6743',
+  ERROR: '\u4efb\u52a1\u9047\u5230\u95ee\u9898',
+  UNKNOWN: '\u72b6\u6001\u5f15\u64ce\u5c1a\u672a\u8fde\u63a5',
+} as const;
+
+export const SOURCE_LABELS: Record<SourceType, string> = {
+  claude_code: 'Claude Code',
+  codex: 'Codex \u5ba2\u6237\u7aef',
+} as const;
+
 export const BLINK_CONFIG = {
   WORKING: { frequency: 1, dutyCycle: 0.5 },
   NEEDS_INPUT: { frequency: 2, dutyCycle: 0.3 },

@@ -1,5 +1,5 @@
 import type { Session } from '../lib/state-constants';
-import { STATE_LABELS } from '../lib/state-constants';
+import { SOURCE_LABELS, STATE_LABELS } from '../lib/state-constants';
 import { TrafficLight } from './TrafficLight';
 
 interface SessionCardProps {
@@ -9,11 +9,12 @@ interface SessionCardProps {
 }
 
 export function SessionCard({ session, expanded = false, onToggle }: SessionCardProps) {
-  const isUrgent = session.state === 'NEEDS_INPUT' || session.state === 'ERROR';
+  const stateClass = `session-card--${session.state.toLowerCase().replace('_', '-')}`;
+  const detail = session.detail || SOURCE_LABELS[session.source];
 
   return (
     <div
-      className={`session-card${isUrgent ? ' session-card--needs-input' : ''}`}
+      className={`session-card ${stateClass}`}
       onClick={onToggle}
       role="listitem"
       tabIndex={0}
@@ -26,12 +27,15 @@ export function SessionCard({ session, expanded = false, onToggle }: SessionCard
       }}
       aria-label={`${session.label}: ${STATE_LABELS[session.state]}`}
     >
-      <TrafficLight state={session.state} compact />
+      <div className="session-card__light">
+        <TrafficLight state={session.state} compact />
+      </div>
       <div className="session-card__info">
-        <div className="session-card__label">{session.label}</div>
-        {expanded && session.detail && (
-          <div className="session-card__detail">{session.detail}</div>
-        )}
+        <div className="session-card__topline">
+          <div className="session-card__label">{session.label}</div>
+          <span className="session-card__source">{SOURCE_LABELS[session.source]}</span>
+        </div>
+        <div className="session-card__detail">{expanded ? detail : SOURCE_LABELS[session.source]}</div>
       </div>
       <span className="session-card__state">
         {STATE_LABELS[session.state]}
