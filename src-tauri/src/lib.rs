@@ -43,6 +43,9 @@ pub fn run() {
                 let mut state = state_clone.write().await;
                 if let Ok(sessions) = status_file::read_status_file().await {
                     state.sessions = sessions;
+                    state
+                        .sessions
+                        .retain(|session_id, _session| !session_id.starts_with("process-"));
                     log::info!("Restored {} sessions from status.json", state.sessions.len());
                 }
             });

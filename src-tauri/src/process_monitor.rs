@@ -1,5 +1,5 @@
 use crate::state::{self, AppState, SessionState, SourceType};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,6 +41,7 @@ impl CliKind {
 #[derive(Debug, Clone)]
 struct ProcessRecord {
     pid: u32,
+    parent_pid: Option<u32>,
     name: String,
     command_line: String,
 }
@@ -73,7 +74,10 @@ async fn sync_cli_processes(
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
     let discovered = discover_cli_sessions()?;
-    let detected_ids: HashSet<String> = discovered.iter().map(|session| session.id.clone()).collect();
+    let detected_ids: HashSet<String> = discovered
+        .iter()
+        .map(|session| session.id.clone())
+        .collect();
 
     let mut app_state = shared_state.write().await;
     let mut changed = false;
@@ -118,10 +122,13 @@ async fn sync_cli_processes(
     let sessions_clone = app_state.sessions.clone();
     drop(app_state);
 
-    let _ = app.emit("state-updated", serde_json::json!({
-        "sessions": sessions_json,
-        "aggregate_state": state::state_to_string(&aggregate),
-    }));
+    let _ = app.emit(
+        "state-updated",
+        serde_json::json!({
+            "sessions": sessions_json,
+            "aggregate_state": state::state_to_string(&aggregate),
+        }),
+    );
 
     tauri::async_runtime::spawn(async move {
         if let Err(e) = crate::status_file::write_status_file(&sessions_clone).await {
@@ -134,19 +141,49 @@ async fn sync_cli_processes(
 
 fn discover_cli_sessions() -> Result<Vec<DiscoveredCliSession>, String> {
     let current_pid = std::process::id();
+    let processes = platform_processes()?;
+    Ok(discover_cli_sessions_from_processes(
+        &processes,
+        current_pid,
+    ))
+}
+
+fn discover_cli_sessions_from_processes(
+    processes: &[ProcessRecord],
+    current_pid: u32,
+) -> Vec<DiscoveredCliSession> {
+    let classified_processes: Vec<(&ProcessRecord, CliKind)> = processes
+        .iter()
+        .filter(|process| process.pid != current_pid)
+        .filter_map(|process| {
+            classify_process(&process.name, &process.command_line).map(|kind| (process, kind))
+        })
+        .collect();
+    let classified_pids: HashSet<u32> = classified_processes
+        .iter()
+        .map(|(process, _kind)| process.pid)
+        .collect();
+    let parent_by_pid: HashMap<u32, u32> = processes
+        .iter()
+        .filter_map(|process| {
+            process
+                .parent_pid
+                .map(|parent_pid| (process.pid, parent_pid))
+        })
+        .collect();
     let mut seen = HashSet::new();
     let mut sessions = Vec::new();
 
-    for process in platform_processes()? {
-        if process.pid == current_pid {
+    for (process, kind) in classified_processes {
+        if has_classified_ancestor(process, &parent_by_pid, &classified_pids) {
             continue;
         }
 
-        let Some(kind) = classify_process(&process.name, &process.command_line) else {
-            continue;
-        };
-
-        let id = format!("{PROCESS_SESSION_PREFIX}{}-{}", kind.id_prefix(), process.pid);
+        let id = format!(
+            "{PROCESS_SESSION_PREFIX}{}-{}",
+            kind.id_prefix(),
+            process.pid
+        );
         if !seen.insert(id.clone()) {
             continue;
         }
@@ -159,11 +196,36 @@ fn discover_cli_sessions() -> Result<Vec<DiscoveredCliSession>, String> {
         });
     }
 
-    Ok(sessions)
+    sessions
+}
+
+fn has_classified_ancestor(
+    process: &ProcessRecord,
+    parent_by_pid: &HashMap<u32, u32>,
+    classified_pids: &HashSet<u32>,
+) -> bool {
+    let mut visited = HashSet::new();
+    let mut current = process.parent_pid;
+
+    while let Some(pid) = current {
+        if classified_pids.contains(&pid) {
+            return true;
+        }
+        if !visited.insert(pid) {
+            return false;
+        }
+        current = parent_by_pid.get(&pid).copied();
+    }
+
+    false
 }
 
 #[cfg(windows)]
 fn platform_processes() -> Result<Vec<ProcessRecord>, String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 Get-CimInstance Win32_Process |
@@ -171,17 +233,21 @@ Get-CimInstance Win32_Process |
     $_.Name -match '^(codex|claude|cc|node|bun|deno)(\.exe)?$' -or
     $_.CommandLine -match '(codex|claude|cc)'
   } |
-  Select-Object ProcessId,Name,CommandLine |
+  Select-Object ProcessId,ParentProcessId,Name,CommandLine |
   ConvertTo-Json -Compress
 "#;
 
     let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("failed to run powershell process scan: {e}"))?;
 
     if !output.status.success() {
-        return Err(format!("powershell process scan exited with {}", output.status));
+        return Err(format!(
+            "powershell process scan exited with {}",
+            output.status
+        ));
     }
 
     parse_windows_process_json(&String::from_utf8_lossy(&output.stdout))
@@ -209,20 +275,33 @@ fn parse_windows_process_json(output: &str) -> Result<Vec<ProcessRecord>, String
 #[cfg(windows)]
 fn parse_windows_process(value: &serde_json::Value) -> Option<ProcessRecord> {
     let pid = value.get("ProcessId")?.as_u64()? as u32;
-    let name = value.get("Name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let parent_pid = value
+        .get("ParentProcessId")
+        .and_then(|v| v.as_u64())
+        .map(|pid| pid as u32);
+    let name = value
+        .get("Name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
     let command_line = value
         .get("CommandLine")
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
 
-    Some(ProcessRecord { pid, name, command_line })
+    Some(ProcessRecord {
+        pid,
+        parent_pid,
+        name,
+        command_line,
+    })
 }
 
 #[cfg(not(windows))]
 fn platform_processes() -> Result<Vec<ProcessRecord>, String> {
     let output = Command::new("ps")
-        .args(["-axo", "pid=,comm=,args="])
+        .args(["-axo", "pid=,ppid=,comm=,args="])
         .output()
         .map_err(|e| format!("failed to run ps process scan: {e}"))?;
 
@@ -241,9 +320,12 @@ fn parse_ps_output(output: &str) -> Vec<ProcessRecord> {
             let line = line.trim_start();
             let (pid, rest) = split_once_whitespace(line)?;
             let pid = pid.parse::<u32>().ok()?;
+            let (parent_pid, rest) = split_once_whitespace(rest)?;
+            let parent_pid = parent_pid.parse::<u32>().ok();
             let (name, command_line) = split_once_whitespace(rest).unwrap_or((rest, ""));
             Some(ProcessRecord {
                 pid,
+                parent_pid,
                 name: name.to_string(),
                 command_line: command_line.to_string(),
             })
@@ -268,18 +350,20 @@ fn classify_process(name: &str, command_line: &str) -> Option<CliKind> {
 }
 
 fn classify_token(token: &str) -> Option<CliKind> {
-    let token = token.trim_matches(|ch: char| {
-        ch == '"' || ch == '\'' || ch == '`' || ch == ',' || ch == ';'
-    });
+    let token = token
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`' || ch == ',' || ch == ';');
     if token.is_empty() {
         return None;
     }
 
     let lower = token.to_ascii_lowercase();
-    if (lower.contains("@openai") && lower.contains("codex")) || lower.contains("openai-codex") {
+    let normalized = lower.replace('\\', "/");
+    if normalized.contains("@openai/codex/bin/codex")
+        || normalized.contains("openai-codex/bin/codex")
+    {
         return Some(CliKind::Codex);
     }
-    if lower.contains("@anthropic-ai") && lower.contains("claude-code") {
+    if normalized.contains("@anthropic-ai/claude-code/cli") {
         return Some(CliKind::ClaudeCode);
     }
 
@@ -317,8 +401,12 @@ mod tests {
 
     #[test]
     fn classifies_node_hosted_claude_code() {
-        let command_line = r#"node C:\Users\me\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js"#;
-        assert_eq!(classify_process("node.exe", command_line), Some(CliKind::ClaudeCode));
+        let command_line =
+            r#"node C:\Users\me\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js"#;
+        assert_eq!(
+            classify_process("node.exe", command_line),
+            Some(CliKind::ClaudeCode)
+        );
     }
 
     #[test]
@@ -328,8 +416,43 @@ mod tests {
     }
 
     #[test]
+    fn ignores_codex_worker_processes() {
+        let command_line = r#"node C:\npm\node_modules\@openai\codex\worker.js"#;
+        assert_eq!(classify_process("node.exe", command_line), None);
+    }
+
+    #[test]
     fn ignores_incidental_codex_path_text() {
         let command_line = r#"node C:\Users\CodexSandboxOffline\app\server.js"#;
         assert_eq!(classify_process("node.exe", command_line), None);
+    }
+
+    #[test]
+    fn keeps_only_top_level_classified_processes() {
+        let processes = vec![
+            ProcessRecord {
+                pid: 10,
+                parent_pid: Some(1),
+                name: "node.exe".to_string(),
+                command_line: r#"node C:\npm\node_modules\@openai\codex\bin\codex.js"#.to_string(),
+            },
+            ProcessRecord {
+                pid: 11,
+                parent_pid: Some(10),
+                name: "node.exe".to_string(),
+                command_line: r#"node C:\npm\node_modules\@openai\codex\worker.js"#.to_string(),
+            },
+            ProcessRecord {
+                pid: 12,
+                parent_pid: Some(11),
+                name: "codex.exe".to_string(),
+                command_line: "codex task child".to_string(),
+            },
+        ];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "process-codex-10");
     }
 }
