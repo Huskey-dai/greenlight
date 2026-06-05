@@ -3,6 +3,7 @@
 export type SessionState = 'IDLE' | 'WORKING' | 'NEEDS_INPUT' | 'ERROR';
 export type DisplayState = SessionState | 'UNKNOWN';
 export type SourceType = 'claude_code' | 'codex';
+export type EventSourceType = SourceType | 'detected_process' | 'system';
 
 export interface Session {
   id: string;
@@ -17,12 +18,32 @@ export interface Session {
 export interface SessionsPayload {
   sessions: Record<string, Session>;
   aggregate_state: string;
+  recent_events?: StateEvent[];
 }
 
 export interface DiagnosticFile {
   label: string;
   path: string;
   exists: boolean;
+  status: 'ok' | 'missing';
+}
+
+export interface StateEvent {
+  id: string;
+  timestamp: string;
+  session_id: string;
+  label: string;
+  from_state?: SessionState;
+  to_state?: SessionState;
+  source: EventSourceType;
+  detail?: string;
+}
+
+export interface HookInstallResult {
+  ok: boolean;
+  hooks_dir: string;
+  installed_count: number;
+  hook_files: DiagnosticFile[];
 }
 
 export interface Diagnostics {
@@ -38,6 +59,7 @@ export interface Diagnostics {
   by_state: Record<string, number>;
   by_source: Record<string, number>;
   latest_update?: string;
+  hooks_ready: boolean;
   hook_files: DiagnosticFile[];
 }
 

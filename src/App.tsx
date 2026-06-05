@@ -38,7 +38,7 @@ function App() {
   useTheme();
 
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-  const { sessions, aggregateState, loading } = useSessions();
+  const { sessions, recentEvents, aggregateState, loading } = useSessions();
   const diagnostics = useDiagnostics(diagnosticsOpen);
 
   const state = aggregateState as DisplayState;
@@ -78,8 +78,12 @@ function App() {
         <DiagnosticsPanel
           diagnostics={diagnostics.diagnostics}
           loading={diagnostics.loading}
+          installing={diagnostics.installing}
           error={diagnostics.error}
+          installMessage={diagnostics.installMessage}
+          recentEvents={recentEvents}
           onRefresh={diagnostics.refresh}
+          onInstallHooks={diagnostics.installHooks}
         />
       )}
       {content}

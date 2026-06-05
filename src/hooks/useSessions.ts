@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import type { SessionsPayload, Session } from '../lib/state-constants';
+import type { SessionsPayload, Session, StateEvent } from '../lib/state-constants';
 
 type DisplayState = 'IDLE' | 'WORKING' | 'NEEDS_INPUT' | 'ERROR' | 'UNKNOWN';
 
 interface UseSessionsResult {
   sessions: Record<string, Session>;
+  recentEvents: StateEvent[];
   aggregateState: DisplayState;
   loading: boolean;
   error: string | null;
@@ -18,6 +19,7 @@ async function loadTauriApi() {
 
 export function useSessions(): UseSessionsResult {
   const [sessions, setSessions] = useState<Record<string, Session>>({});
+  const [recentEvents, setRecentEvents] = useState<StateEvent[]>([]);
   const [aggregateState, setAggregateState] = useState<DisplayState>('UNKNOWN');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,12 +40,16 @@ export function useSessions(): UseSessionsResult {
         const agg = await invoke<string>('get_aggregate_state');
         if (!mounted) return;
         setAggregateState(agg as DisplayState);
+        const events = await invoke<StateEvent[]>('get_recent_events');
+        if (!mounted) return;
+        setRecentEvents(events);
         setLoading(false);
 
         // Subscribe to updates
         const fn = await listen<SessionsPayload>('state-updated', (event) => {
           setSessions(event.payload.sessions);
           setAggregateState(event.payload.aggregate_state as DisplayState);
+          setRecentEvents(event.payload.recent_events ?? []);
         });
         unlisten = fn;
       } catch (e) {
@@ -62,5 +68,5 @@ export function useSessions(): UseSessionsResult {
     };
   }, []);
 
-  return { sessions, aggregateState, loading, error };
+  return { sessions, recentEvents, aggregateState, loading, error };
 }

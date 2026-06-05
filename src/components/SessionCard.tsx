@@ -10,7 +10,16 @@ interface SessionCardProps {
 
 export function SessionCard({ session, expanded = false, onToggle }: SessionCardProps) {
   const stateClass = `session-card--${session.state.toLowerCase().replace('_', '-')}`;
-  const detail = session.detail || SOURCE_LABELS[session.source];
+  const isDetectedProcess = session.id.startsWith('process-');
+  const sourceHint =
+    session.state === 'NEEDS_INPUT'
+      ? '\u7b49\u5f85\u5904\u7406'
+      : isDetectedProcess
+        ? session.state === 'WORKING'
+          ? '\u8fdb\u7a0b\u63a2\u6d4b\u5230\u6267\u884c'
+          : '\u5ba2\u6237\u7aef\u5df2\u8fde\u63a5'
+        : 'hook \u66f4\u65b0';
+  const detail = session.detail || sourceHint;
 
   return (
     <div
@@ -35,7 +44,7 @@ export function SessionCard({ session, expanded = false, onToggle }: SessionCard
           <div className="session-card__label">{session.label}</div>
           <span className="session-card__source">{SOURCE_LABELS[session.source]}</span>
         </div>
-        <div className="session-card__detail">{expanded ? detail : SOURCE_LABELS[session.source]}</div>
+        <div className="session-card__detail">{expanded ? detail : sourceHint}</div>
       </div>
       <span className="session-card__state">
         {STATE_LABELS[session.state]}

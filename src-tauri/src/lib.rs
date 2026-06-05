@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
 use tokio::sync::RwLock;
@@ -21,7 +21,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // Create shared application state
-            let app_state = Arc::new(RwLock::new(state::AppState::new(state::EngineConfig::default())));
+            let app_state = Arc::new(RwLock::new(state::AppState::new(
+                state::EngineConfig::default(),
+            )));
 
             // Create the popup window (hidden by default, shown on tray click)
             let _popup = tauri::WebviewWindowBuilder::new(
@@ -47,7 +49,10 @@ pub fn run() {
                     state
                         .sessions
                         .retain(|session_id, _session| !session_id.starts_with("process-"));
-                    log::info!("Restored {} sessions from status.json", state.sessions.len());
+                    log::info!(
+                        "Restored {} sessions from status.json",
+                        state.sessions.len()
+                    );
                 }
             });
 
@@ -89,6 +94,8 @@ pub fn run() {
             get_sessions,
             get_aggregate_state,
             get_diagnostics,
+            get_recent_events,
+            install_hooks,
             remove_session,
             rename_session,
         ])
@@ -128,6 +135,7 @@ struct Diagnostics {
     by_state: std::collections::HashMap<String, usize>,
     by_source: std::collections::HashMap<String, usize>,
     latest_update: Option<String>,
+    hooks_ready: bool,
     hook_files: Vec<DiagnosticFile>,
 }
 
@@ -136,6 +144,21 @@ struct DiagnosticFile {
     label: &'static str,
     path: String,
     exists: bool,
+    status: &'static str,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct HookInstallResult {
+    ok: bool,
+    hooks_dir: String,
+    installed_count: usize,
+    hook_files: Vec<DiagnosticFile>,
+}
+
+struct HookFileSpec {
+    label: &'static str,
+    relative_path: &'static str,
+    contents: &'static str,
 }
 
 #[tauri::command]
@@ -182,6 +205,8 @@ async fn get_diagnostics(
     let http_port = std::fs::read_to_string(&port_file)
         .ok()
         .and_then(|port| port.trim().parse::<u16>().ok());
+    let hook_files = collect_hook_diagnostics(&hooks_dir);
+    let hooks_ready = hooks_ready(&hook_files);
 
     Ok(Diagnostics {
         version: env!("CARGO_PKG_VERSION"),
@@ -196,22 +221,100 @@ async fn get_diagnostics(
         by_state,
         by_source,
         latest_update,
-        hook_files: vec![
-            diagnostic_file("post-tool-use.js", hooks_dir.join("post-tool-use.js")),
-            diagnostic_file("needs-input.js", hooks_dir.join("needs-input.js")),
-            diagnostic_file("stop.js", hooks_dir.join("stop.js")),
-            diagnostic_file("api-client.js", hooks_dir.join("lib").join("api-client.js")),
-            diagnostic_file("session.js", hooks_dir.join("lib").join("session.js")),
-        ],
+        hooks_ready,
+        hook_files,
     })
 }
 
 fn diagnostic_file(label: &'static str, path: PathBuf) -> DiagnosticFile {
+    let exists = path.exists();
     DiagnosticFile {
         label,
-        exists: path.exists(),
+        exists,
+        status: if exists { "ok" } else { "missing" },
         path: path.display().to_string(),
     }
+}
+
+fn hook_file_specs() -> Vec<HookFileSpec> {
+    vec![
+        HookFileSpec {
+            label: "post-tool-use.js",
+            relative_path: "post-tool-use.js",
+            contents: include_str!("../../hooks/post-tool-use.js"),
+        },
+        HookFileSpec {
+            label: "needs-input.js",
+            relative_path: "needs-input.js",
+            contents: include_str!("../../hooks/needs-input.js"),
+        },
+        HookFileSpec {
+            label: "stop.js",
+            relative_path: "stop.js",
+            contents: include_str!("../../hooks/stop.js"),
+        },
+        HookFileSpec {
+            label: "error.js",
+            relative_path: "error.js",
+            contents: include_str!("../../hooks/error.js"),
+        },
+        HookFileSpec {
+            label: "api-client.js",
+            relative_path: "lib/api-client.js",
+            contents: include_str!("../../hooks/lib/api-client.js"),
+        },
+        HookFileSpec {
+            label: "session.js",
+            relative_path: "lib/session.js",
+            contents: include_str!("../../hooks/lib/session.js"),
+        },
+    ]
+}
+
+fn collect_hook_diagnostics(hooks_dir: &std::path::Path) -> Vec<DiagnosticFile> {
+    hook_file_specs()
+        .into_iter()
+        .map(|spec| diagnostic_file(spec.label, hooks_dir.join(spec.relative_path)))
+        .collect()
+}
+
+fn hooks_ready(files: &[DiagnosticFile]) -> bool {
+    files.iter().all(|file| file.exists)
+}
+
+fn install_hooks_to_dir(greenlight_dir: &std::path::Path) -> std::io::Result<HookInstallResult> {
+    let hooks_dir = greenlight_dir.join("hooks");
+    let mut installed_count = 0;
+
+    for spec in hook_file_specs() {
+        let target = hooks_dir.join(spec.relative_path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(target, spec.contents)?;
+        installed_count += 1;
+    }
+
+    let hook_files = collect_hook_diagnostics(&hooks_dir);
+    Ok(HookInstallResult {
+        ok: hooks_ready(&hook_files),
+        hooks_dir: hooks_dir.display().to_string(),
+        installed_count,
+        hook_files,
+    })
+}
+
+#[tauri::command]
+async fn install_hooks() -> Result<HookInstallResult, String> {
+    install_hooks_to_dir(&greenlight_dir()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_recent_events(
+    state: tauri::State<'_, Arc<RwLock<state::AppState>>>,
+) -> Result<Vec<state::StateEvent>, String> {
+    let app_state = state.read().await;
+    Ok(app_state.recent_events.clone())
 }
 
 fn greenlight_dir() -> PathBuf {
@@ -229,15 +332,29 @@ async fn remove_session(
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     let mut app_state = state.write().await;
-    if app_state.sessions.remove(&session_id).is_some() {
+    let removed = app_state.sessions.remove(&session_id);
+    if let Some(session) = removed {
+        app_state.record_event(
+            session_id.clone(),
+            session.label,
+            Some(session.state),
+            None,
+            "system",
+            Some("Session removed".to_string()),
+        );
         let aggregate = state::aggregate_state(&app_state.sessions);
         let sessions_json = serde_json::to_value(&app_state.sessions).unwrap_or_default();
+        let events_json = serde_json::to_value(&app_state.recent_events).unwrap_or_default();
         drop(app_state);
 
-        let _ = app.emit("state-updated", serde_json::json!({
-            "sessions": sessions_json,
-            "aggregate_state": state::state_to_string(&aggregate),
-        }));
+        let _ = app.emit(
+            "state-updated",
+            serde_json::json!({
+                "sessions": sessions_json,
+                "aggregate_state": state::state_to_string(&aggregate),
+                "recent_events": events_json,
+            }),
+        );
 
         // Write status file in background
         let state_clone = state.inner().clone();
@@ -251,6 +368,44 @@ async fn remove_session(
         Ok(true)
     } else {
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_greenlight_dir(name: &str) -> PathBuf {
+        let stamp = chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() * 1_000_000);
+        std::env::temp_dir().join(format!("greenlight-{name}-{stamp}"))
+    }
+
+    #[test]
+    fn hook_diagnostics_report_missing_files() {
+        let dir = temp_greenlight_dir("missing-hooks");
+        let hooks_dir = dir.join("hooks");
+
+        let files = collect_hook_diagnostics(&hooks_dir);
+
+        assert!(!hooks_ready(&files));
+        assert!(files.iter().any(|file| file.status == "missing"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn install_hooks_writes_all_embedded_files() {
+        let dir = temp_greenlight_dir("install-hooks");
+
+        let result = install_hooks_to_dir(&dir).expect("install hooks");
+
+        assert!(result.ok);
+        assert_eq!(result.installed_count, 6);
+        assert!(hooks_ready(&result.hook_files));
+        assert!(dir.join("hooks").join("post-tool-use.js").exists());
+        assert!(dir.join("hooks").join("lib").join("session.js").exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

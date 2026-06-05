@@ -97,14 +97,39 @@ async fn sync_cli_processes(
 
     for discovered_session in discovered {
         if let Some(existing) = app_state.sessions.get_mut(&discovered_session.id) {
-            changed |= update_detected_process_session(existing, &discovered_session, now);
+            let event = update_detected_process_session(existing, &discovered_session, now);
+            if event.changed {
+                if let Some(event) = event.state_event {
+                    app_state.record_event(
+                        event.session_id,
+                        event.label,
+                        event.from_state,
+                        event.to_state,
+                        "detected_process",
+                        event.detail,
+                    );
+                }
+                changed = true;
+            }
         } else {
+            let id = discovered_session.id.clone();
+            let label = discovered_session.label.clone();
+            let detail = discovered_session.detail.clone();
+            let state = discovered_session.state;
             app_state.upsert_session(
                 discovered_session.id,
                 discovered_session.state,
                 Some(discovered_session.label),
                 Some(discovered_session.detail),
                 discovered_session.source,
+            );
+            app_state.record_event(
+                id,
+                label,
+                None,
+                Some(state),
+                "detected_process",
+                Some(detail),
             );
             changed = true;
         }
@@ -118,7 +143,16 @@ async fn sync_cli_processes(
         .collect();
 
     for id in stale_ids {
-        app_state.sessions.remove(&id);
+        if let Some(session) = app_state.sessions.remove(&id) {
+            app_state.record_event(
+                id,
+                session.label,
+                Some(session.state),
+                None,
+                "detected_process",
+                Some("Client disconnected".to_string()),
+            );
+        }
         changed = true;
     }
 
@@ -128,6 +162,7 @@ async fn sync_cli_processes(
 
     let aggregate = state::aggregate_state(&app_state.sessions);
     let sessions_json = serde_json::to_value(&app_state.sessions).unwrap_or_default();
+    let events_json = serde_json::to_value(&app_state.recent_events).unwrap_or_default();
     let sessions_clone = app_state.sessions.clone();
     drop(app_state);
 
@@ -136,6 +171,7 @@ async fn sync_cli_processes(
         serde_json::json!({
             "sessions": sessions_json,
             "aggregate_state": state::state_to_string(&aggregate),
+            "recent_events": events_json,
         }),
     );
 
@@ -148,13 +184,28 @@ async fn sync_cli_processes(
     Ok(())
 }
 
+struct ProcessSessionUpdate {
+    changed: bool,
+    state_event: Option<PendingStateEvent>,
+}
+
+struct PendingStateEvent {
+    session_id: String,
+    label: String,
+    from_state: Option<SessionState>,
+    to_state: Option<SessionState>,
+    detail: Option<String>,
+}
+
 fn update_detected_process_session(
     existing: &mut state::Session,
     discovered_session: &DiscoveredCliSession,
     now: chrono::DateTime<chrono::Utc>,
-) -> bool {
+) -> ProcessSessionUpdate {
     let mut changed = false;
     let owns_detail = is_detected_process_detail(existing.detail.as_deref());
+    let previous_state = existing.state;
+    let previous_detail = existing.detail.clone();
 
     existing.updated_at = now;
     if existing.label != discovered_session.label {
@@ -162,7 +213,7 @@ fn update_detected_process_session(
         changed = true;
     }
 
-    if existing.state == SessionState::Working && owns_detail {
+    if owns_detail && existing.state != discovered_session.state {
         existing.state = discovered_session.state;
         changed = true;
     }
@@ -174,7 +225,22 @@ fn update_detected_process_session(
         }
     }
 
-    changed
+    let state_event = if previous_state != existing.state || previous_detail != existing.detail {
+        Some(PendingStateEvent {
+            session_id: existing.id.clone(),
+            label: existing.label.clone(),
+            from_state: Some(previous_state),
+            to_state: Some(existing.state),
+            detail: existing.detail.clone(),
+        })
+    } else {
+        None
+    };
+
+    ProcessSessionUpdate {
+        changed,
+        state_event,
+    }
 }
 
 fn is_stale_detected_process_session(
@@ -236,16 +302,77 @@ fn discover_cli_sessions_from_processes(
             continue;
         }
 
+        let (state, detail) = detected_state_and_detail(process, kind, processes, &parent_by_pid);
+
         sessions.push(DiscoveredCliSession {
             id,
             label: kind.label().to_string(),
-            detail: kind.detail().to_string(),
-            state: kind.default_state(),
+            detail,
+            state,
             source: kind.source(),
         });
     }
 
     sessions
+}
+
+fn detected_state_and_detail(
+    process: &ProcessRecord,
+    kind: CliKind,
+    processes: &[ProcessRecord],
+    parent_by_pid: &HashMap<u32, u32>,
+) -> (SessionState, String) {
+    if kind == CliKind::Codex && has_active_codex_descendant(process.pid, processes, parent_by_pid)
+    {
+        return (
+            SessionState::Working,
+            "\u{5ba2}\u{6237}\u{7aef}\u{6b63}\u{5728}\u{6267}\u{884c}\u{4efb}\u{52a1}".to_string(),
+        );
+    }
+
+    (kind.default_state(), kind.detail().to_string())
+}
+
+fn has_active_codex_descendant(
+    root_pid: u32,
+    processes: &[ProcessRecord],
+    parent_by_pid: &HashMap<u32, u32>,
+) -> bool {
+    processes.iter().any(|process| {
+        process.pid != root_pid
+            && is_descendant_of(process.pid, root_pid, parent_by_pid)
+            && is_active_codex_process(process)
+    })
+}
+
+fn is_active_codex_process(process: &ProcessRecord) -> bool {
+    let name = process.name.to_ascii_lowercase();
+    let command_line = process.command_line.to_ascii_lowercase();
+    name.starts_with("codex-command-runner")
+        || command_line.contains("codex-command-runner")
+        || command_line.contains(" codex.exe\" sandbox ")
+        || command_line.contains("/codex\" sandbox ")
+        || command_line.contains("\\codex.exe\" sandbox ")
+        || command_line.contains(" codex.exe sandbox ")
+        || command_line.contains("/codex sandbox ")
+        || command_line.contains("\\codex.exe sandbox ")
+}
+
+fn is_descendant_of(pid: u32, root_pid: u32, parent_by_pid: &HashMap<u32, u32>) -> bool {
+    let mut visited = HashSet::new();
+    let mut current = Some(pid);
+
+    while let Some(pid) = current {
+        if pid == root_pid {
+            return true;
+        }
+        if !visited.insert(pid) {
+            return false;
+        }
+        current = parent_by_pid.get(&pid).copied();
+    }
+
+    false
 }
 
 fn is_detected_process_detail(detail: Option<&str>) -> bool {
@@ -254,6 +381,7 @@ fn is_detected_process_detail(detail: Option<&str>) -> bool {
         Some("CLI running")
             | Some("\u{5ba2}\u{6237}\u{7aef}\u{8fd0}\u{884c}\u{4e2d}")
             | Some("\u{5ba2}\u{6237}\u{7aef}\u{5df2}\u{8fde}\u{63a5}")
+            | Some("\u{5ba2}\u{6237}\u{7aef}\u{6b63}\u{5728}\u{6267}\u{884c}\u{4efb}\u{52a1}")
     )
 }
 
@@ -548,10 +676,11 @@ mod tests {
         );
         let discovered = discovered_codex_session("process-codex-10");
 
-        let changed =
+        let update =
             update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
 
-        assert!(changed);
+        assert!(update.changed);
+        assert!(update.state_event.is_some());
         assert_eq!(existing.state, SessionState::Idle);
         assert_eq!(
             existing.detail.as_deref(),
@@ -568,8 +697,10 @@ mod tests {
         );
         let discovered = discovered_codex_session("process-codex-10");
 
-        update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
+        let update =
+            update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
 
+        assert!(!update.changed);
         assert_eq!(existing.state, SessionState::NeedsInput);
         assert_eq!(existing.detail.as_deref(), Some("Permission: run command"));
     }
@@ -583,10 +714,54 @@ mod tests {
         );
         let discovered = discovered_codex_session("process-codex-10");
 
-        update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
+        let update =
+            update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
 
+        assert!(!update.changed);
         assert_eq!(existing.state, SessionState::Working);
         assert_eq!(existing.detail.as_deref(), Some("Tool: shell_command"));
+    }
+
+    #[test]
+    fn marks_codex_client_working_when_sandbox_descendant_is_active() {
+        let processes = vec![
+            ProcessRecord {
+                pid: 10,
+                parent_pid: Some(1),
+                name: "Codex.exe".to_string(),
+                command_line: r#""C:\Program Files\WindowsApps\OpenAI.Codex\app\Codex.exe""#
+                    .to_string(),
+            },
+            ProcessRecord {
+                pid: 20,
+                parent_pid: Some(10),
+                name: "codex.exe".to_string(),
+                command_line: r#""C:\Users\me\AppData\Local\OpenAI\Codex\bin\codex.exe" app-server --analytics-default-enabled"#.to_string(),
+            },
+            ProcessRecord {
+                pid: 30,
+                parent_pid: Some(20),
+                name: "node_repl.exe".to_string(),
+                command_line: r#""C:\Users\me\AppData\Local\OpenAI\Codex\bin\node_repl.exe""#
+                    .to_string(),
+            },
+            ProcessRecord {
+                pid: 40,
+                parent_pid: Some(30),
+                name: "codex.exe".to_string(),
+                command_line: r#""C:\Users\me\AppData\Local\OpenAI\Codex\bin\codex.exe" sandbox -- C:\node.exe kernel.js --working-dir C:\repo"#.to_string(),
+            },
+        ];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "process-codex-10");
+        assert_eq!(sessions[0].state, SessionState::Working);
+        assert_eq!(
+            sessions[0].detail,
+            "\u{5ba2}\u{6237}\u{7aef}\u{6b63}\u{5728}\u{6267}\u{884c}\u{4efb}\u{52a1}"
+        );
     }
 
     #[test]

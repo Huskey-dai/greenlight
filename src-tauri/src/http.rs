@@ -114,6 +114,7 @@ async fn update_session_state(
     }
 
     let mut app_state = server_state.app_state.write().await;
+    let previous = app_state.sessions.get(&session_id).cloned();
     let aggregate = app_state.upsert_session(
         session_id.clone(),
         body.state,
@@ -121,14 +122,35 @@ async fn update_session_state(
         body.detail.clone(),
         body.source.clone(),
     );
+    let current = app_state.sessions.get(&session_id).cloned();
+    if previous.as_ref().map_or(true, |session| {
+        session.state != body.state || session.detail != body.detail
+    }) {
+        if let Some(session) = current {
+            app_state.record_event(
+                session_id.clone(),
+                session.label.clone(),
+                previous.map(|session| session.state),
+                Some(session.state),
+                state::source_to_string(&session.source),
+                session.detail.clone(),
+            );
+        }
+    }
 
     let sessions_json = serde_json::to_value(&app_state.sessions).unwrap_or_default();
+    let events_json = serde_json::to_value(&app_state.recent_events).unwrap_or_default();
 
     // Write status file in background (non-blocking)
     let sessions_clone = app_state.sessions.clone();
     drop(app_state);
 
-    emit_state_updated(&server_state.app_handle, sessions_json, &aggregate);
+    emit_state_updated(
+        &server_state.app_handle,
+        sessions_json,
+        events_json,
+        &aggregate,
+    );
 
     tauri::async_runtime::spawn(async move {
         if let Err(e) = status_file::write_status_file(&sessions_clone).await {
@@ -152,12 +174,29 @@ async fn remove_session(
     Path(session_id): Path<String>,
 ) -> Result<Json<ApiResponse>, AppError> {
     let mut app_state = server_state.app_state.write().await;
+    let removed = app_state.sessions.get(&session_id).cloned();
     if let Some(aggregate) = app_state.remove_session(&session_id) {
+        if let Some(session) = removed {
+            app_state.record_event(
+                session_id.clone(),
+                session.label.clone(),
+                Some(session.state),
+                None,
+                "system",
+                Some("Session removed".to_string()),
+            );
+        }
         let sessions_json = serde_json::to_value(&app_state.sessions).unwrap_or_default();
+        let events_json = serde_json::to_value(&app_state.recent_events).unwrap_or_default();
         let sessions_clone = app_state.sessions.clone();
         drop(app_state);
 
-        emit_state_updated(&server_state.app_handle, sessions_json, &aggregate);
+        emit_state_updated(
+            &server_state.app_handle,
+            sessions_json,
+            events_json,
+            &aggregate,
+        );
 
         tauri::async_runtime::spawn(async move {
             if let Err(e) = status_file::write_status_file(&sessions_clone).await {
@@ -175,9 +214,9 @@ async fn remove_session(
         Ok(Json(ApiResponse {
             ok: true,
             session_id: Some(session_id),
-            aggregate_state: Some(state::state_to_string(
-                &state::aggregate_state(&server_state.app_state.read().await.sessions),
-            )),
+            aggregate_state: Some(state::state_to_string(&state::aggregate_state(
+                &server_state.app_state.read().await.sessions,
+            ))),
             error: None,
         }))
     }
@@ -190,9 +229,7 @@ async fn list_sessions(
     Ok(Json(serde_json::to_value(&app_state.sessions)?))
 }
 
-async fn health_check(
-    State(server_state): State<HttpServerState>,
-) -> Json<HealthResponse> {
+async fn health_check(State(server_state): State<HttpServerState>) -> Json<HealthResponse> {
     let app_state = server_state.app_state.read().await;
     Json(HealthResponse {
         status: "ok",
@@ -236,7 +273,10 @@ pub async fn start_server(
     }
 
     let app = Router::new()
-        .route("/api/sessions/{session_id}/state", post(update_session_state))
+        .route(
+            "/api/sessions/{session_id}/state",
+            post(update_session_state),
+        )
         .route("/api/sessions/{session_id}", delete(remove_session))
         .route("/api/sessions", get(list_sessions))
         .route("/api/health", get(health_check))
@@ -260,12 +300,17 @@ pub async fn start_server(
 fn emit_state_updated(
     app: &tauri::AppHandle,
     sessions_json: serde_json::Value,
+    events_json: serde_json::Value,
     aggregate: &SessionState,
 ) {
-    let _ = app.emit("state-updated", serde_json::json!({
-        "sessions": sessions_json,
-        "aggregate_state": state::state_to_string(aggregate),
-    }));
+    let _ = app.emit(
+        "state-updated",
+        serde_json::json!({
+            "sessions": sessions_json,
+            "aggregate_state": state::state_to_string(aggregate),
+            "recent_events": events_json,
+        }),
+    );
 }
 
 async fn write_port_file(port: u16) -> std::io::Result<()> {
@@ -300,6 +345,8 @@ mod dirs {
         std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .map(PathBuf::from)
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "Cannot find home directory"))
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "Cannot find home directory")
+            })
     }
 }

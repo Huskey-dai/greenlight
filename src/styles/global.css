@@ -193,7 +193,8 @@ body {
 }
 
 .diagnostics-panel__empty,
-.diagnostics-panel__error {
+.diagnostics-panel__error,
+.diagnostics-panel__message {
   font-size: 11px;
   color: var(--text-tertiary);
 }
@@ -202,9 +203,66 @@ body {
   color: var(--color-error);
 }
 
+.diagnostics-panel__message {
+  margin-bottom: 7px;
+  color: var(--color-idle);
+}
+
+.diagnostics-panel__repair {
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-working) 16%, var(--button-bg));
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.diagnostics-panel__repair:hover {
+  background: color-mix(in srgb, var(--color-working) 24%, var(--button-hover));
+}
+
+.diagnostics-panel__repair:disabled {
+  cursor: default;
+  opacity: 0.68;
+}
+
 .diagnostics-grid {
   display: grid;
   gap: 7px;
+}
+
+.diagnostics-hooks-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-idle) 24%, transparent);
+  border-radius: 6px;
+  background: var(--status-idle-bg);
+}
+
+.diagnostics-hooks-status--missing {
+  border-color: color-mix(in srgb, var(--color-working) 30%, transparent);
+  background: var(--status-working-bg);
+}
+
+.diagnostics-hooks-status div {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.diagnostics-hooks-status span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.diagnostics-hooks-status strong {
+  color: var(--text-primary);
+  font-size: 12px;
 }
 
 .diagnostics-row,
@@ -248,6 +306,51 @@ body {
   gap: 4px 10px;
   padding-top: 4px;
   border-top: 1px solid var(--border-color);
+}
+
+.diagnostics-events {
+  display: grid;
+  gap: 5px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color);
+}
+
+.diagnostics-events__title {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.diagnostics-events__empty {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.diagnostics-event {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.diagnostics-event__time {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.diagnostics-event__body {
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostics-event__body em {
+  margin-left: 6px;
+  color: var(--text-tertiary);
+  font-style: normal;
 }
 
 /* Session list */
@@ -395,6 +498,13 @@ body {
   font-size: 12px;
   color: var(--text-secondary);
   margin-top: 4px;
+}
+
+.single-session__source {
+  max-width: 260px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
 .single-session__detail {
