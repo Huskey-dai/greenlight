@@ -32,16 +32,13 @@ impl CliKind {
 
     fn detail(self) -> &'static str {
         match self {
-            Self::Codex => "\u{5ba2}\u{6237}\u{7aef}\u{8fd0}\u{884c}\u{4e2d}",
+            Self::Codex => "\u{5ba2}\u{6237}\u{7aef}\u{5df2}\u{8fde}\u{63a5}",
             Self::ClaudeCode => "CLI running",
         }
     }
 
     fn default_state(self) -> SessionState {
-        match self {
-            Self::Codex => SessionState::Working,
-            Self::ClaudeCode => SessionState::Idle,
-        }
+        SessionState::Idle
     }
 
     fn source(self) -> SourceType {
@@ -100,19 +97,7 @@ async fn sync_cli_processes(
 
     for discovered_session in discovered {
         if let Some(existing) = app_state.sessions.get_mut(&discovered_session.id) {
-            existing.updated_at = now;
-            if existing.label != discovered_session.label {
-                existing.label = discovered_session.label;
-                changed = true;
-            }
-            if existing.state == SessionState::Idle && discovered_session.state == SessionState::Working {
-                existing.state = discovered_session.state;
-                changed = true;
-            }
-            if existing.detail.is_none() || existing.detail.as_deref() == Some("CLI running") {
-                existing.detail = Some(discovered_session.detail);
-                changed = true;
-            }
+            changed |= update_detected_process_session(existing, &discovered_session, now);
         } else {
             app_state.upsert_session(
                 discovered_session.id,
@@ -127,9 +112,9 @@ async fn sync_cli_processes(
 
     let stale_ids: Vec<String> = app_state
         .sessions
-        .keys()
-        .filter(|id| id.starts_with(PROCESS_SESSION_PREFIX) && !detected_ids.contains(*id))
-        .cloned()
+        .iter()
+        .filter(|(id, session)| is_stale_detected_process_session(id, session, &detected_ids))
+        .map(|(id, _session)| id.clone())
         .collect();
 
     for id in stale_ids {
@@ -161,6 +146,45 @@ async fn sync_cli_processes(
     });
 
     Ok(())
+}
+
+fn update_detected_process_session(
+    existing: &mut state::Session,
+    discovered_session: &DiscoveredCliSession,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let mut changed = false;
+    let owns_detail = is_detected_process_detail(existing.detail.as_deref());
+
+    existing.updated_at = now;
+    if existing.label != discovered_session.label {
+        existing.label = discovered_session.label.clone();
+        changed = true;
+    }
+
+    if existing.state == SessionState::Working && owns_detail {
+        existing.state = discovered_session.state;
+        changed = true;
+    }
+
+    if existing.detail.is_none() || owns_detail {
+        if existing.detail.as_deref() != Some(discovered_session.detail.as_str()) {
+            existing.detail = Some(discovered_session.detail.clone());
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+fn is_stale_detected_process_session(
+    id: &str,
+    session: &state::Session,
+    detected_ids: &HashSet<String>,
+) -> bool {
+    id.starts_with(PROCESS_SESSION_PREFIX)
+        && !detected_ids.contains(id)
+        && is_detected_process_detail(session.detail.as_deref())
 }
 
 fn discover_cli_sessions() -> Result<Vec<DiscoveredCliSession>, String> {
@@ -222,6 +246,15 @@ fn discover_cli_sessions_from_processes(
     }
 
     sessions
+}
+
+fn is_detected_process_detail(detail: Option<&str>) -> bool {
+    matches!(
+        detail,
+        Some("CLI running")
+            | Some("\u{5ba2}\u{6237}\u{7aef}\u{8fd0}\u{884c}\u{4e2d}")
+            | Some("\u{5ba2}\u{6237}\u{7aef}\u{5df2}\u{8fde}\u{63a5}")
+    )
 }
 
 fn has_classified_ancestor(
@@ -419,6 +452,29 @@ fn executable_stem(token: &str) -> String {
 mod tests {
     use super::*;
 
+    fn discovered_codex_session(id: &str) -> DiscoveredCliSession {
+        DiscoveredCliSession {
+            id: id.to_string(),
+            label: "Codex \u{5ba2}\u{6237}\u{7aef}".to_string(),
+            detail: "\u{5ba2}\u{6237}\u{7aef}\u{5df2}\u{8fde}\u{63a5}".to_string(),
+            state: SessionState::Idle,
+            source: SourceType::Codex,
+        }
+    }
+
+    fn session(id: &str, state: SessionState, detail: Option<&str>) -> state::Session {
+        let now = chrono::Utc::now();
+        state::Session {
+            id: id.to_string(),
+            label: "Codex \u{5ba2}\u{6237}\u{7aef}".to_string(),
+            state,
+            detail: detail.map(str::to_string),
+            started_at: now,
+            updated_at: now,
+            source: SourceType::Codex,
+        }
+    }
+
     #[test]
     fn classifies_codex_binary_name() {
         assert_eq!(classify_process("codex.exe", ""), Some(CliKind::Codex));
@@ -480,6 +536,82 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "process-codex-10");
         assert_eq!(sessions[0].label, "Codex \u{5ba2}\u{6237}\u{7aef}");
-        assert_eq!(sessions[0].state, SessionState::Working);
+        assert_eq!(sessions[0].state, SessionState::Idle);
+    }
+
+    #[test]
+    fn downgrades_legacy_detected_working_placeholder_to_idle() {
+        let mut existing = session(
+            "process-codex-10",
+            SessionState::Working,
+            Some("\u{5ba2}\u{6237}\u{7aef}\u{8fd0}\u{884c}\u{4e2d}"),
+        );
+        let discovered = discovered_codex_session("process-codex-10");
+
+        let changed =
+            update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
+
+        assert!(changed);
+        assert_eq!(existing.state, SessionState::Idle);
+        assert_eq!(
+            existing.detail.as_deref(),
+            Some("\u{5ba2}\u{6237}\u{7aef}\u{5df2}\u{8fde}\u{63a5}")
+        );
+    }
+
+    #[test]
+    fn preserves_authoritative_needs_input_session() {
+        let mut existing = session(
+            "process-codex-10",
+            SessionState::NeedsInput,
+            Some("Permission: run command"),
+        );
+        let discovered = discovered_codex_session("process-codex-10");
+
+        update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
+
+        assert_eq!(existing.state, SessionState::NeedsInput);
+        assert_eq!(existing.detail.as_deref(), Some("Permission: run command"));
+    }
+
+    #[test]
+    fn preserves_authoritative_working_session() {
+        let mut existing = session(
+            "process-codex-10",
+            SessionState::Working,
+            Some("Tool: shell_command"),
+        );
+        let discovered = discovered_codex_session("process-codex-10");
+
+        update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
+
+        assert_eq!(existing.state, SessionState::Working);
+        assert_eq!(existing.detail.as_deref(), Some("Tool: shell_command"));
+    }
+
+    #[test]
+    fn removes_only_stale_detected_process_placeholders() {
+        let detected_ids = HashSet::new();
+        let placeholder = session(
+            "process-codex-10",
+            SessionState::Idle,
+            Some("\u{5ba2}\u{6237}\u{7aef}\u{5df2}\u{8fde}\u{63a5}"),
+        );
+        let hook_session = session(
+            "process-codex-11",
+            SessionState::NeedsInput,
+            Some("Permission: run command"),
+        );
+
+        assert!(is_stale_detected_process_session(
+            "process-codex-10",
+            &placeholder,
+            &detected_ids,
+        ));
+        assert!(!is_stale_detected_process_session(
+            "process-codex-11",
+            &hook_session,
+            &detected_ids,
+        ));
     }
 }
