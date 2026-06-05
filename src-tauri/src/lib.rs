@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 mod error;
 mod http;
 mod icons;
+mod process_monitor;
 mod state;
 mod status_file;
 mod theme;
@@ -60,6 +61,13 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 state::start_ttl_cleanup(state_clone, &handle).await;
+            });
+
+            // Detect Codex / Claude Code CLI processes even before hooks emit a state.
+            let state_clone = app_state.clone();
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                process_monitor::start_cli_process_monitor(state_clone, &handle).await;
             });
 
             // Setup system tray (after popup window is created and state is restored)

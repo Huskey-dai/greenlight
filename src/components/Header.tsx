@@ -1,4 +1,5 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import type { MouseEvent } from 'react';
 import type { DisplayState } from '../lib/state-constants';
 import { TrafficLight } from './TrafficLight';
 
@@ -8,12 +9,17 @@ interface HeaderProps {
 }
 
 export function Header({ aggregateState, sessionCount }: HeaderProps) {
+  const startDrag = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    void getCurrentWindow().startDragging();
+  };
+
   const hidePopup = () => {
     void getCurrentWindow().hide();
   };
 
   return (
-    <div className="popup-header">
+    <div className="popup-header" data-tauri-drag-region onMouseDown={startDrag}>
       <div className="popup-header__main">
         <div className="popup-header__identity">
           <TrafficLight state={aggregateState} compact showLabel={false} />
@@ -32,6 +38,7 @@ export function Header({ aggregateState, sessionCount }: HeaderProps) {
         type="button"
         aria-label="Close"
         title="Close"
+        onMouseDown={(event) => event.stopPropagation()}
         onClick={hidePopup}
       >
         X

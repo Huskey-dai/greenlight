@@ -4,7 +4,7 @@
  * Session identity for Greenlight hook scripts.
  *
  * Reads GREENLIGHT_SESSION_ID and GREENLIGHT_SESSION_LABEL from environment.
- * Falls back to hook-provided session identifiers, then parent-PID caching.
+ * Falls back to hook-provided session identifiers, then the parent CLI PID.
  */
 
 const fs = require('fs');
@@ -38,7 +38,12 @@ function stableSessionKey(hookData = {}) {
     if (id) return { id, cache: false };
   }
 
-  const cacheKeySource = process.env.GREENLIGHT_SESSION_KEY || `ppid-${process.ppid}`;
+  if (!process.env.GREENLIGHT_SESSION_KEY) {
+    const sourcePrefix = getSessionSource() === 'codex' ? 'codex' : 'claude';
+    return { id: `process-${sourcePrefix}-${process.ppid}`, cache: false };
+  }
+
+  const cacheKeySource = process.env.GREENLIGHT_SESSION_KEY;
   const cacheKey = crypto.createHash('sha256').update(cacheKeySource).digest('hex').slice(0, 16);
   return { id: cacheKey, cache: true };
 }
