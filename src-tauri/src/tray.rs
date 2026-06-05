@@ -23,10 +23,7 @@ pub fn setup_tray(
         .menu(&menu)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show" => {
-                if let Some(window) = app.get_webview_window("popup") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                show_popup(app);
             }
             "quit" => {
                 app.exit(0);
@@ -41,24 +38,18 @@ pub fn setup_tray(
             } = event
             {
                 let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("popup") {
-                    if window.is_visible().unwrap_or(false) {
-                        let _ = window.hide();
-                    } else {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
+                toggle_popup(app);
             }
         })
         .build(app)?;
 
-    // Update tray icon when state changes
+    // Spawn a background task to update the tray icon based on state changes
     let app_handle = app.handle().clone();
+    let state_clone = shared_state.clone();
     tauri::async_runtime::spawn(async move {
         let mut prev_state = String::new();
         loop {
-            let app_state = shared_state.read().await;
+            let app_state = state_clone.read().await;
             let agg = aggregate_state(&app_state.sessions);
             let count = app_state.sessions.len();
             let new_state = format!("{:?}{}", agg, count);
@@ -85,4 +76,31 @@ pub fn setup_tray(
     });
 
     Ok(())
+}
+
+/// Show the popup window. If it doesn't exist, log an error.
+fn show_popup(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("popup") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        log::error!("Popup window not found — it should have been created in setup()");
+    }
+}
+
+/// Toggle the popup window visibility.
+/// Show if hidden, hide if visible. Also repositions near the tray icon.
+fn toggle_popup(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("popup") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+            // Future: position window near tray icon
+            // This requires platform-specific APIs to get tray icon position
+        }
+    } else {
+        log::error!("Popup window not found — it should have been created in setup()");
+    }
 }

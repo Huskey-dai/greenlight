@@ -21,6 +21,21 @@ pub fn run() {
             // Create shared application state
             let app_state = Arc::new(RwLock::new(state::AppState::new(state::EngineConfig::default())));
 
+            // Create the popup window (hidden by default, shown on tray click)
+            let _popup = tauri::WebviewWindowBuilder::new(
+                app,
+                "popup",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("Greenlight")
+            .inner_size(360.0, 500.0)
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false) // Hidden by default — toggled via tray icon
+            .build()?;
+
             // Start the HTTP server on a background task
             let state_clone = app_state.clone();
             let handle = app.handle().clone();
@@ -37,7 +52,7 @@ pub fn run() {
                 state::start_ttl_cleanup(state_clone, &handle).await;
             });
 
-            // Setup system tray
+            // Setup system tray (after popup window is created)
             tray::setup_tray(app, app_state.clone())?;
 
             // Restore sessions from status.json if it exists
@@ -50,7 +65,10 @@ pub fn run() {
                 }
             });
 
-            // Register Tauri commands
+            // Start theme listener
+            theme::start_theme_listener(app.handle());
+
+            // Register Tauri command handlers
             app.manage(app_state.clone());
 
             Ok(())
@@ -92,11 +110,23 @@ async fn remove_session(
     let mut app_state = state.write().await;
     if app_state.sessions.remove(&session_id).is_some() {
         let aggregate = state::aggregate_state(&app_state.sessions);
+        let sessions_json = serde_json::to_value(&app_state.sessions).unwrap_or_default();
         drop(app_state);
+
         let _ = app.emit("state-updated", serde_json::json!({
-            "sessions": {},
+            "sessions": sessions_json,
             "aggregate_state": state::state_to_string(&aggregate),
         }));
+
+        // Write status file in background
+        let state_clone = state.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            let app_state = state_clone.read().await;
+            if let Err(e) = status_file::write_status_file(&app_state.sessions).await {
+                log::error!("Failed to write status file after remove: {e}");
+            }
+        });
+
         Ok(true)
     } else {
         Ok(false)
