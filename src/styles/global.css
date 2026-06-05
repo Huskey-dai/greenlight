@@ -51,8 +51,25 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px 12px;
+  gap: 8px;
+  padding: 8px 10px 12px 16px;
   border-bottom: 1px solid var(--border-color);
+}
+
+.popup-header__main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.popup-header__identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .popup-header__title {
@@ -65,6 +82,28 @@ body {
   font-size: 11px;
   color: var(--text-tertiary);
   margin-left: 8px;
+  white-space: nowrap;
+}
+
+.popup-header__close {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.popup-header__close:hover {
+  background: var(--button-hover);
+  color: var(--text-primary);
 }
 
 /* Session list */

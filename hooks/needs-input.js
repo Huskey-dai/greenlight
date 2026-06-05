@@ -8,7 +8,7 @@
  */
 
 const { sendState } = require('./lib/api-client');
-const { getSessionId, getSessionLabel } = require('./lib/session');
+const { getSessionId, getSessionLabel, getSessionSource } = require('./lib/session');
 
 async function main() {
   let hookData = {};
@@ -32,7 +32,7 @@ async function main() {
   await sendState(sessionId, 'NEEDS_INPUT', {
     label,
     detail,
-    source: 'claude_code',
+    source: getSessionSource(),
   });
 }
 
@@ -47,5 +47,6 @@ function readStdin() {
   });
 }
 
-main().catch(() => process.exit(0));
-process.exit(0);
+main()
+  .catch(() => {})
+  .finally(() => process.exit(0));

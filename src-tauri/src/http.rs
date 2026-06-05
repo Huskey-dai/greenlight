@@ -6,6 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
+use tauri::Emitter;
 use tokio::sync::RwLock;
 
 use crate::error::AppError;
@@ -13,7 +14,13 @@ use crate::state::{self, AppState, SessionState, SourceType};
 use crate::status_file;
 
 /// Shared state type for axum handlers.
-type SharedState = Arc<RwLock<AppState>>;
+type SharedAppState = Arc<RwLock<AppState>>;
+
+#[derive(Clone)]
+struct HttpServerState {
+    app_state: SharedAppState,
+    app_handle: tauri::AppHandle,
+}
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -57,7 +64,7 @@ pub struct HealthResponse {
 // ---------------------------------------------------------------------------
 
 async fn update_session_state(
-    State(shared_state): State<SharedState>,
+    State(server_state): State<HttpServerState>,
     Path(session_id): Path<String>,
     Json(body): Json<UpdateStateRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse>), AppError> {
@@ -106,7 +113,7 @@ async fn update_session_state(
         }
     }
 
-    let mut app_state = shared_state.write().await;
+    let mut app_state = server_state.app_state.write().await;
     let aggregate = app_state.upsert_session(
         session_id.clone(),
         body.state,
@@ -115,11 +122,13 @@ async fn update_session_state(
         body.source.clone(),
     );
 
-    let _sessions_json = serde_json::to_value(&app_state.sessions).unwrap_or_default();
+    let sessions_json = serde_json::to_value(&app_state.sessions).unwrap_or_default();
 
     // Write status file in background (non-blocking)
     let sessions_clone = app_state.sessions.clone();
     drop(app_state);
+
+    emit_state_updated(&server_state.app_handle, sessions_json, &aggregate);
 
     tauri::async_runtime::spawn(async move {
         if let Err(e) = status_file::write_status_file(&sessions_clone).await {
@@ -139,13 +148,22 @@ async fn update_session_state(
 }
 
 async fn remove_session(
-    State(shared_state): State<SharedState>,
+    State(server_state): State<HttpServerState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<ApiResponse>, AppError> {
-    let mut app_state = shared_state.write().await;
+    let mut app_state = server_state.app_state.write().await;
     if let Some(aggregate) = app_state.remove_session(&session_id) {
-        let _sessions_json = serde_json::to_value(&app_state.sessions).unwrap_or_default();
+        let sessions_json = serde_json::to_value(&app_state.sessions).unwrap_or_default();
+        let sessions_clone = app_state.sessions.clone();
         drop(app_state);
+
+        emit_state_updated(&server_state.app_handle, sessions_json, &aggregate);
+
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = status_file::write_status_file(&sessions_clone).await {
+                log::error!("Failed to write status file after delete: {e}");
+            }
+        });
 
         Ok(Json(ApiResponse {
             ok: true,
@@ -158,7 +176,7 @@ async fn remove_session(
             ok: true,
             session_id: Some(session_id),
             aggregate_state: Some(state::state_to_string(
-                &state::aggregate_state(&shared_state.read().await.sessions),
+                &state::aggregate_state(&server_state.app_state.read().await.sessions),
             )),
             error: None,
         }))
@@ -166,16 +184,16 @@ async fn remove_session(
 }
 
 async fn list_sessions(
-    State(shared_state): State<SharedState>,
+    State(server_state): State<HttpServerState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let app_state = shared_state.read().await;
+    let app_state = server_state.app_state.read().await;
     Ok(Json(serde_json::to_value(&app_state.sessions)?))
 }
 
 async fn health_check(
-    State(shared_state): State<SharedState>,
+    State(server_state): State<HttpServerState>,
 ) -> Json<HealthResponse> {
-    let app_state = shared_state.read().await;
+    let app_state = server_state.app_state.read().await;
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -190,10 +208,13 @@ async fn health_check(
 /// Start the HTTP server. Tries ports 17321-17331, writes the selected port to port.txt.
 pub async fn start_server(
     shared_state: Arc<RwLock<AppState>>,
-    _app: &tauri::AppHandle,
+    app: &tauri::AppHandle,
 ) -> Result<(), AppError> {
     let base_port = shared_state.read().await.config.http_port;
-    let app_state_clone = shared_state.clone();
+    let server_state = HttpServerState {
+        app_state: shared_state.clone(),
+        app_handle: app.clone(),
+    };
 
     let (selected_port, server) = 'port_search: {
         for port in base_port..=(base_port + 10) {
@@ -219,7 +240,7 @@ pub async fn start_server(
         .route("/api/sessions/:session_id", delete(remove_session))
         .route("/api/sessions", get(list_sessions))
         .route("/api/health", get(health_check))
-        .with_state(app_state_clone);
+        .with_state(server_state);
 
     // Graceful shutdown: delete port file on server stop
     let port_file_cleanup = async {
@@ -234,6 +255,17 @@ pub async fn start_server(
         })
         .await
         .map_err(AppError::from)
+}
+
+fn emit_state_updated(
+    app: &tauri::AppHandle,
+    sessions_json: serde_json::Value,
+    aggregate: &SessionState,
+) {
+    let _ = app.emit("state-updated", serde_json::json!({
+        "sessions": sessions_json,
+        "aggregate_state": state::state_to_string(aggregate),
+    }));
 }
 
 async fn write_port_file(port: u16) -> std::io::Result<()> {

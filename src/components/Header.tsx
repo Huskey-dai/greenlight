@@ -1,3 +1,4 @@
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { DisplayState } from '../lib/state-constants';
 import { TrafficLight } from './TrafficLight';
 
@@ -7,19 +8,34 @@ interface HeaderProps {
 }
 
 export function Header({ aggregateState, sessionCount }: HeaderProps) {
+  const hidePopup = () => {
+    void getCurrentWindow().hide();
+  };
+
   return (
     <div className="popup-header">
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <TrafficLight state={aggregateState} compact showLabel={false} />
-        <span className="popup-header__title">Greenlight</span>
+      <div className="popup-header__main">
+        <div className="popup-header__identity">
+          <TrafficLight state={aggregateState} compact showLabel={false} />
+          <span className="popup-header__title">Greenlight</span>
+        </div>
+        <span className="popup-header__count">
+          {sessionCount === 0
+            ? '\u65e0\u4f1a\u8bdd'
+            : sessionCount === 1
+              ? '1 \u4e2a\u4f1a\u8bdd'
+              : `${sessionCount} \u4e2a\u4f1a\u8bdd`}
+        </span>
       </div>
-      <span className="popup-header__count">
-        {sessionCount === 0
-          ? '无会话'
-          : sessionCount === 1
-            ? '1 个会话'
-            : `${sessionCount} 个会话`}
-      </span>
+      <button
+        className="popup-header__close"
+        type="button"
+        aria-label="Close"
+        title="Close"
+        onClick={hidePopup}
+      >
+        X
+      </button>
     </div>
   );
 }

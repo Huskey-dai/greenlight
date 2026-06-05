@@ -7,13 +7,13 @@
  */
 
 const { sendState, removeSession } = require('./lib/api-client');
-const { getSessionId } = require('./lib/session');
+const { getSessionId, getSessionSource } = require('./lib/session');
 
 async function main() {
   const sessionId = getSessionId();
 
   // First set to IDLE
-  await sendState(sessionId, 'IDLE', { source: 'claude_code' });
+  await sendState(sessionId, 'IDLE', { source: getSessionSource() });
 
   // Then remove the session entirely
   await removeSession(sessionId);
@@ -32,5 +32,6 @@ async function main() {
   }
 }
 
-main().catch(() => process.exit(0));
-process.exit(0);
+main()
+  .catch(() => {})
+  .finally(() => process.exit(0));

@@ -27,7 +27,6 @@ export function TrafficLight({
         ? 'light--needs-input'
         : '';
 
-  // SVG rendering for high-DPI clarity
   return (
     <span
       style={{
@@ -36,7 +35,7 @@ export function TrafficLight({
         gap: compact ? '6px' : '8px',
       }}
       role="img"
-      aria-label={`状态: ${label}`}
+      aria-label={`\u72b6\u6001: ${label}`}
     >
       <svg
         width={compact ? 10 : size}
@@ -50,7 +49,6 @@ export function TrafficLight({
             <stop offset="100%" stopColor={color} stopOpacity="0" />
           </radialGradient>
         </defs>
-        {/* Outer glow */}
         <circle
           cx="12"
           cy="12"
@@ -58,7 +56,6 @@ export function TrafficLight({
           fill={`url(#glow-${state})`}
           className={isBlinking && !prefersReducedMotion ? blinkClass : undefined}
         />
-        {/* Core circle */}
         <circle
           cx="12"
           cy="12"
@@ -66,7 +63,6 @@ export function TrafficLight({
           fill={color}
           className={isBlinking && !prefersReducedMotion ? blinkClass : undefined}
         />
-        {/* Subtle inner light (low opacity, no white highlight) */}
         <circle
           cx="12"
           cy="10"
@@ -74,7 +70,6 @@ export function TrafficLight({
           fill="white"
           opacity="0.08"
         />
-        {/* Border ring */}
         <circle
           cx="12"
           cy="12"

@@ -8,7 +8,7 @@
  */
 
 const { sendState } = require('./lib/api-client');
-const { getSessionId, getSessionLabel } = require('./lib/session');
+const { getSessionId, getSessionLabel, getSessionSource } = require('./lib/session');
 
 async function main() {
   let hookData = {};
@@ -32,7 +32,7 @@ async function main() {
   await sendState(sessionId, 'WORKING', {
     label,
     detail,
-    source: 'claude_code',
+    source: getSessionSource(),
   });
 }
 
@@ -48,6 +48,7 @@ function readStdin() {
   });
 }
 
-main().catch(() => process.exit(0));
-// Always exit 0 — never block Claude Code
-process.exit(0);
+// Always exit 0 - never block Claude Code.
+main()
+  .catch(() => {})
+  .finally(() => process.exit(0));

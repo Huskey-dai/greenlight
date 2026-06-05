@@ -46,4 +46,9 @@ function getSessionLabel() {
   return process.env.GREENLIGHT_SESSION_LABEL || 'Session';
 }
 
-module.exports = { getSessionId, getSessionLabel };
+function getSessionSource() {
+  const source = (process.env.GREENLIGHT_SOURCE || 'claude_code').toLowerCase();
+  return source === 'codex' ? 'codex' : 'claude_code';
+}
+
+module.exports = { getSessionId, getSessionLabel, getSessionSource };

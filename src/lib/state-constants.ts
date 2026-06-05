@@ -19,7 +19,6 @@ export interface SessionsPayload {
   aggregate_state: string;
 }
 
-// State color constants (cross-theme)
 export const STATE_COLORS: Record<DisplayState, string> = {
   IDLE: '#22C55E',
   WORKING: '#EAB308',
@@ -28,17 +27,15 @@ export const STATE_COLORS: Record<DisplayState, string> = {
   UNKNOWN: '#6B7280',
 } as const;
 
-// State labels (Chinese, matching the requirements doc)
 export const STATE_LABELS: Record<DisplayState, string> = {
-  IDLE: '空闲',
-  WORKING: '工作中',
-  NEEDS_INPUT: '需授权',
-  ERROR: '出错',
-  UNKNOWN: '未连接',
+  IDLE: '\u7a7a\u95f2',
+  WORKING: '\u5de5\u4f5c\u4e2d',
+  NEEDS_INPUT: '\u9700\u6388\u6743',
+  ERROR: '\u51fa\u9519',
+  UNKNOWN: '\u672a\u8fde\u63a5',
 } as const;
 
-// Blink configuration
 export const BLINK_CONFIG = {
-  WORKING: { frequency: 1, dutyCycle: 0.5 },   // 1Hz, 50% duty
-  NEEDS_INPUT: { frequency: 2, dutyCycle: 0.3 }, // 2Hz, 30% duty
+  WORKING: { frequency: 1, dutyCycle: 0.5 },
+  NEEDS_INPUT: { frequency: 2, dutyCycle: 0.3 },
 } as const;
