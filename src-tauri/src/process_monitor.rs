@@ -64,6 +64,9 @@ struct DiscoveredCliSession {
     detail: String,
     state: SessionState,
     source: SourceType,
+    allow_single_codex_alias_merge: bool,
+    mergeable_codex_alias_ids: Vec<String>,
+    has_authoritative_alias_state: bool,
 }
 
 pub async fn start_cli_process_monitor(
@@ -85,15 +88,32 @@ async fn sync_cli_processes(
     shared_state: Arc<RwLock<AppState>>,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
-    let discovered = discover_cli_sessions()?;
-    let detected_ids: HashSet<String> = discovered
-        .iter()
-        .map(|session| session.id.clone())
-        .collect();
+    let mut discovered = discover_cli_sessions()?;
 
     let mut app_state = shared_state.write().await;
     let mut changed = false;
     let now = chrono::Utc::now();
+
+    let alias_events =
+        merge_single_codex_process_aliases(&mut app_state.sessions, &mut discovered, now);
+    if !alias_events.is_empty() {
+        changed = true;
+        for event in alias_events {
+            app_state.record_event(
+                event.session_id,
+                event.label,
+                event.from_state,
+                event.to_state,
+                "detected_process",
+                event.detail,
+            );
+        }
+    }
+
+    let detected_ids: HashSet<String> = discovered
+        .iter()
+        .map(|session| session.id.clone())
+        .collect();
 
     for discovered_session in discovered {
         if let Some(existing) = app_state.sessions.get_mut(&discovered_session.id) {
@@ -213,16 +233,33 @@ fn update_detected_process_session(
         changed = true;
     }
 
-    if owns_detail && existing.state != discovered_session.state {
+    let should_accept_detected_state = discovered_session.has_authoritative_alias_state
+        || owns_detail
+        || matches!(existing.state, SessionState::Idle | SessionState::Working);
+
+    if should_accept_detected_state && existing.state != discovered_session.state {
         existing.state = discovered_session.state;
         changed = true;
     }
 
-    if existing.detail.is_none() || owns_detail {
-        if existing.detail.as_deref() != Some(discovered_session.detail.as_str()) {
-            existing.detail = Some(discovered_session.detail.clone());
-            changed = true;
-        }
+    let should_accept_detected_detail = existing.detail.is_none()
+        || owns_detail
+        || discovered_session.has_authoritative_alias_state
+        || matches!(
+            discovered_session.state,
+            SessionState::NeedsInput | SessionState::Error
+        )
+        || matches!(
+            (previous_state, discovered_session.state),
+            (SessionState::Working, SessionState::Idle)
+                | (SessionState::Idle, SessionState::Working)
+        );
+
+    if should_accept_detected_detail
+        && existing.detail.as_deref() != Some(discovered_session.detail.as_str())
+    {
+        existing.detail = Some(discovered_session.detail.clone());
+        changed = true;
     }
 
     let state_event = if previous_state != existing.state || previous_detail != existing.detail {
@@ -251,6 +288,74 @@ fn is_stale_detected_process_session(
     id.starts_with(PROCESS_SESSION_PREFIX)
         && !detected_ids.contains(id)
         && is_detected_process_detail(session.detail.as_deref())
+}
+
+fn merge_single_codex_process_aliases(
+    sessions: &mut HashMap<String, state::Session>,
+    discovered: &mut [DiscoveredCliSession],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<PendingStateEvent> {
+    let codex_sessions: Vec<&mut DiscoveredCliSession> = discovered
+        .iter_mut()
+        .filter(|session| session.source == SourceType::Codex)
+        .collect();
+    if codex_sessions.len() != 1 || !codex_sessions[0].allow_single_codex_alias_merge {
+        return Vec::new();
+    }
+
+    let canonical = codex_sessions.into_iter().next().expect("checked len");
+    let alias_ids = canonical.mergeable_codex_alias_ids.clone();
+
+    let mut events = Vec::new();
+    for alias_id in alias_ids {
+        if let Some(alias) = sessions.remove(&alias_id) {
+            merge_codex_alias_state(canonical, &alias, now);
+            events.push(PendingStateEvent {
+                session_id: alias.id,
+                label: alias.label,
+                from_state: Some(alias.state),
+                to_state: None,
+                detail: Some("Merged duplicate Codex process session".to_string()),
+            });
+        }
+    }
+
+    events
+}
+
+fn merge_codex_alias_state(
+    canonical: &mut DiscoveredCliSession,
+    alias: &state::Session,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let previous_state = canonical.state;
+    let previous_detail = canonical.detail.clone();
+    match alias.state {
+        SessionState::NeedsInput | SessionState::Error => {
+            if alias.state.priority() >= canonical.state.priority() {
+                canonical.state = alias.state;
+                canonical.detail = alias
+                    .detail
+                    .clone()
+                    .unwrap_or_else(|| canonical.detail.clone());
+            }
+        }
+        SessionState::Working => {
+            let is_fresh = now - alias.updated_at <= chrono::TimeDelta::seconds(10);
+            if canonical.state.priority() <= SessionState::Working.priority()
+                && (canonical.state == SessionState::Working || is_fresh)
+            {
+                canonical.state = SessionState::Working;
+                if let Some(detail) = &alias.detail {
+                    canonical.detail = detail.clone();
+                }
+            }
+        }
+        SessionState::Idle => {}
+    }
+
+    canonical.has_authoritative_alias_state |=
+        previous_state != canonical.state || previous_detail != canonical.detail;
 }
 
 fn discover_cli_sessions() -> Result<Vec<DiscoveredCliSession>, String> {
@@ -288,32 +393,151 @@ fn discover_cli_sessions_from_processes(
     let mut seen = HashSet::new();
     let mut sessions = Vec::new();
 
-    for (process, kind) in classified_processes {
-        if has_classified_ancestor(process, &parent_by_pid, &classified_pids) {
+    for (process, kind) in &classified_processes {
+        if *kind == CliKind::Codex
+            || has_classified_ancestor(process, &parent_by_pid, &classified_pids)
+        {
             continue;
         }
 
-        let id = format!(
-            "{PROCESS_SESSION_PREFIX}{}-{}",
-            kind.id_prefix(),
-            process.pid
+        push_discovered_session(
+            &mut sessions,
+            &mut seen,
+            process,
+            *kind,
+            processes,
+            &parent_by_pid,
+            ProcessSessionFlags::default(),
         );
-        if !seen.insert(id.clone()) {
-            continue;
-        }
+    }
 
-        let (state, detail) = detected_state_and_detail(process, kind, processes, &parent_by_pid);
-
-        sessions.push(DiscoveredCliSession {
-            id,
-            label: kind.label().to_string(),
-            detail,
-            state,
-            source: kind.source(),
+    let codex_roots =
+        select_codex_root_processes(&classified_processes, &parent_by_pid, &classified_pids);
+    let has_unattached_codex_app_server = codex_roots.len() == 1
+        && classified_processes.iter().any(|(process, kind)| {
+            *kind == CliKind::Codex
+                && process.pid != codex_roots[0].pid
+                && is_codex_app_server_process(process)
+                && !is_descendant_of(process.pid, codex_roots[0].pid, &parent_by_pid)
         });
+    let allow_single_codex_alias_merge = codex_roots.len() == 1 && !has_unattached_codex_app_server;
+
+    for process in codex_roots {
+        push_discovered_session(
+            &mut sessions,
+            &mut seen,
+            process,
+            CliKind::Codex,
+            processes,
+            &parent_by_pid,
+            ProcessSessionFlags {
+                allow_single_codex_alias_merge,
+                mergeable_codex_alias_ids: mergeable_codex_alias_ids(
+                    process.pid,
+                    &classified_processes,
+                    &parent_by_pid,
+                ),
+            },
+        );
     }
 
     sessions
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProcessSessionFlags {
+    allow_single_codex_alias_merge: bool,
+    mergeable_codex_alias_ids: Vec<String>,
+}
+
+fn push_discovered_session(
+    sessions: &mut Vec<DiscoveredCliSession>,
+    seen: &mut HashSet<String>,
+    process: &ProcessRecord,
+    kind: CliKind,
+    processes: &[ProcessRecord],
+    parent_by_pid: &HashMap<u32, u32>,
+    flags: ProcessSessionFlags,
+) {
+    let id = format!(
+        "{PROCESS_SESSION_PREFIX}{}-{}",
+        kind.id_prefix(),
+        process.pid
+    );
+    if !seen.insert(id.clone()) {
+        return;
+    }
+
+    let (state, detail) = detected_state_and_detail(process, kind, processes, parent_by_pid);
+
+    sessions.push(DiscoveredCliSession {
+        id,
+        label: kind.label().to_string(),
+        detail,
+        state,
+        source: kind.source(),
+        allow_single_codex_alias_merge: flags.allow_single_codex_alias_merge,
+        mergeable_codex_alias_ids: flags.mergeable_codex_alias_ids,
+        has_authoritative_alias_state: false,
+    });
+}
+
+fn mergeable_codex_alias_ids(
+    root_pid: u32,
+    classified_processes: &[(&ProcessRecord, CliKind)],
+    parent_by_pid: &HashMap<u32, u32>,
+) -> Vec<String> {
+    classified_processes
+        .iter()
+        .filter_map(|(process, kind)| {
+            if *kind == CliKind::Codex
+                && process.pid != root_pid
+                && is_descendant_of(process.pid, root_pid, parent_by_pid)
+                && is_codex_app_server_process(process)
+            {
+                Some(format!("{PROCESS_SESSION_PREFIX}codex-{}", process.pid))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn select_codex_root_processes<'a>(
+    classified_processes: &[(&'a ProcessRecord, CliKind)],
+    parent_by_pid: &HashMap<u32, u32>,
+    classified_pids: &HashSet<u32>,
+) -> Vec<&'a ProcessRecord> {
+    let mut roots: Vec<&ProcessRecord> = classified_processes
+        .iter()
+        .filter_map(|(process, kind)| {
+            if *kind == CliKind::Codex
+                && !has_classified_ancestor(process, parent_by_pid, classified_pids)
+                && is_codex_client_root_process(process)
+            {
+                Some(*process)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if roots.is_empty() {
+        roots = classified_processes
+            .iter()
+            .filter_map(|(process, kind)| {
+                if *kind == CliKind::Codex && is_codex_app_server_process(process) {
+                    Some(*process)
+                } else {
+                    None
+                }
+            })
+            .collect();
+    }
+
+    roots.sort_by_key(|process| process.pid);
+    roots.dedup_by_key(|process| process.pid);
+    roots
 }
 
 fn detected_state_and_detail(
@@ -322,7 +546,9 @@ fn detected_state_and_detail(
     processes: &[ProcessRecord],
     parent_by_pid: &HashMap<u32, u32>,
 ) -> (SessionState, String) {
-    if kind == CliKind::Codex && has_active_codex_descendant(process.pid, processes, parent_by_pid)
+    if kind == CliKind::Codex
+        && (is_active_codex_root_process(process)
+            || has_active_codex_descendant(process.pid, processes, parent_by_pid))
     {
         return (
             SessionState::Working,
@@ -333,6 +559,36 @@ fn detected_state_and_detail(
     (kind.default_state(), kind.detail().to_string())
 }
 
+fn is_codex_client_root_process(process: &ProcessRecord) -> bool {
+    let name = process.name.to_ascii_lowercase();
+    let command_line = process.command_line.to_ascii_lowercase();
+    classify_process(&name, &command_line) == Some(CliKind::Codex)
+        && (!is_codex_internal_process(&name, &command_line)
+            || is_node_hosted_codex_cli(&name, &command_line))
+        && !is_active_codex_helper_process(&name, &command_line)
+}
+
+fn is_codex_app_server_process(process: &ProcessRecord) -> bool {
+    let command_line = process.command_line.to_ascii_lowercase();
+    has_codex_subcommand(&command_line, "app-server")
+}
+
+fn is_node_hosted_codex_cli(name: &str, command_line: &str) -> bool {
+    let normalized = command_line.replace('\\', "/");
+    executable_stem(name) == "node"
+        && (normalized.contains("@openai/codex/bin/codex")
+            || normalized.contains("openai-codex/bin/codex"))
+}
+
+fn is_active_codex_root_process(process: &ProcessRecord) -> bool {
+    let name = process.name.to_ascii_lowercase();
+    let command_line = process.command_line.to_ascii_lowercase();
+    name.starts_with("codex-command-runner")
+        || command_line.contains("codex-command-runner")
+        || has_codex_subcommand(&command_line, "sandbox")
+        || has_codex_subcommand(&command_line, "exec")
+}
+
 fn has_active_codex_descendant(
     root_pid: u32,
     processes: &[ProcessRecord],
@@ -341,21 +597,68 @@ fn has_active_codex_descendant(
     processes.iter().any(|process| {
         process.pid != root_pid
             && is_descendant_of(process.pid, root_pid, parent_by_pid)
-            && is_active_codex_process(process)
+            && is_active_codex_descendant_process(process)
     })
 }
 
-fn is_active_codex_process(process: &ProcessRecord) -> bool {
+fn is_active_codex_descendant_process(process: &ProcessRecord) -> bool {
     let name = process.name.to_ascii_lowercase();
     let command_line = process.command_line.to_ascii_lowercase();
+    if is_codex_internal_process(&name, &command_line)
+        || is_background_daemon_process(&command_line)
+    {
+        return false;
+    }
+
+    !is_codex_client_root_process(process)
+}
+
+fn is_active_codex_helper_process(name: &str, command_line: &str) -> bool {
     name.starts_with("codex-command-runner")
         || command_line.contains("codex-command-runner")
-        || command_line.contains(" codex.exe\" sandbox ")
-        || command_line.contains("/codex\" sandbox ")
-        || command_line.contains("\\codex.exe\" sandbox ")
-        || command_line.contains(" codex.exe sandbox ")
-        || command_line.contains("/codex sandbox ")
-        || command_line.contains("\\codex.exe sandbox ")
+        || has_codex_subcommand(command_line, "sandbox")
+        || has_codex_subcommand(command_line, "exec")
+}
+
+fn has_codex_subcommand(command_line: &str, subcommand: &str) -> bool {
+    let mut saw_codex = false;
+    for token in command_line
+        .split(|ch: char| ch.is_whitespace() || ch == '"' || ch == '\'')
+        .filter(|token| !token.is_empty())
+    {
+        let stem = executable_stem(token).to_ascii_lowercase();
+        if stem == "codex" {
+            saw_codex = true;
+            continue;
+        }
+        if saw_codex {
+            return token.eq_ignore_ascii_case(subcommand);
+        }
+    }
+
+    false
+}
+
+fn is_codex_internal_process(name: &str, command_line: &str) -> bool {
+    match executable_stem(name).as_str() {
+        "codex" => {
+            command_line.contains(" app-server")
+                || command_line.contains("--type=")
+                || command_line.contains("crashpad-handler")
+        }
+        "node" => {
+            command_line.contains("@openai/codex")
+                || command_line.contains("openai-codex")
+                || command_line.contains("\\codex\\worker")
+                || command_line.contains("/codex/worker")
+        }
+        "node_repl" => true,
+        _ => false,
+    }
+}
+
+fn is_background_daemon_process(command_line: &str) -> bool {
+    command_line.contains("fsmonitor--daemon run --detach")
 }
 
 fn is_descendant_of(pid: u32, root_pid: u32, parent_by_pid: &HashMap<u32, u32>) -> bool {
@@ -414,11 +717,45 @@ fn platform_processes() -> Result<Vec<ProcessRecord>, String> {
 
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
-Get-CimInstance Win32_Process |
-  Where-Object {
-    $_.Name -match '^(codex|claude|cc|node|bun|deno)(\.exe)?$' -or
-    $_.CommandLine -match '(codex|claude|cc)'
-  } |
+$processes = Get-CimInstance Win32_Process |
+  Select-Object ProcessId,ParentProcessId,Name,CommandLine
+$byParent = @{}
+foreach ($process in $processes) {
+  $parentId = [int]$process.ParentProcessId
+  if (-not $byParent.ContainsKey($parentId)) {
+    $byParent[$parentId] = New-Object System.Collections.Generic.List[object]
+  }
+  $byParent[$parentId].Add($process)
+}
+$selected = @{}
+$queue = New-Object System.Collections.Generic.Queue[object]
+foreach ($process in $processes) {
+  if (
+    $process.Name -match '^codex-command-runner' -or
+    $process.Name -match '^(codex|claude|cc|node|node_repl|bun|deno|cmd|powershell|pwsh|bash|sh|git|cargo|rustc|rustdoc|npm|npx|pnpm|yarn|python|python3|uv|uvx|go|dotnet|msbuild|devenv|cl|link|java|javac)(\.exe)?$' -or
+    $process.CommandLine -match '(codex|claude|cc)'
+  ) {
+    $pid = [int]$process.ProcessId
+    $selected[$pid] = $process
+    $queue.Enqueue($process)
+  }
+}
+while ($queue.Count -gt 0) {
+  $parent = $queue.Dequeue()
+  $parentId = [int]$parent.ProcessId
+  if (-not $byParent.ContainsKey($parentId)) {
+    continue
+  }
+  foreach ($child in $byParent[$parentId]) {
+    $childId = [int]$child.ProcessId
+    if ($selected.ContainsKey($childId)) {
+      continue
+    }
+    $selected[$childId] = $child
+    $queue.Enqueue($child)
+  }
+}
+$selected.Values |
   Select-Object ProcessId,ParentProcessId,Name,CommandLine |
   ConvertTo-Json -Compress
 "#;
@@ -546,6 +883,7 @@ fn classify_token(token: &str) -> Option<CliKind> {
     let normalized = lower.replace('\\', "/");
     if normalized.contains("@openai/codex/bin/codex")
         || normalized.contains("openai-codex/bin/codex")
+        || normalized.contains("codex-command-runner")
     {
         return Some(CliKind::Codex);
     }
@@ -587,6 +925,23 @@ mod tests {
             detail: "\u{5ba2}\u{6237}\u{7aef}\u{5df2}\u{8fde}\u{63a5}".to_string(),
             state: SessionState::Idle,
             source: SourceType::Codex,
+            allow_single_codex_alias_merge: true,
+            mergeable_codex_alias_ids: Vec::new(),
+            has_authoritative_alias_state: false,
+        }
+    }
+
+    fn discovered_working_codex_session(id: &str) -> DiscoveredCliSession {
+        DiscoveredCliSession {
+            id: id.to_string(),
+            label: "Codex \u{5ba2}\u{6237}\u{7aef}".to_string(),
+            detail: "\u{5ba2}\u{6237}\u{7aef}\u{6b63}\u{5728}\u{6267}\u{884c}\u{4efb}\u{52a1}"
+                .to_string(),
+            state: SessionState::Working,
+            source: SourceType::Codex,
+            allow_single_codex_alias_merge: true,
+            mergeable_codex_alias_ids: Vec::new(),
+            has_authoritative_alias_state: false,
         }
     }
 
@@ -706,7 +1061,24 @@ mod tests {
     }
 
     #[test]
-    fn preserves_authoritative_working_session() {
+    fn preserves_authoritative_working_detail_when_detected_working() {
+        let mut existing = session(
+            "process-codex-10",
+            SessionState::Working,
+            Some("Tool: shell_command"),
+        );
+        let discovered = discovered_working_codex_session("process-codex-10");
+
+        let update =
+            update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
+
+        assert!(!update.changed);
+        assert_eq!(existing.state, SessionState::Working);
+        assert_eq!(existing.detail.as_deref(), Some("Tool: shell_command"));
+    }
+
+    #[test]
+    fn downgrades_authoritative_working_session_when_detected_idle() {
         let mut existing = session(
             "process-codex-10",
             SessionState::Working,
@@ -717,9 +1089,12 @@ mod tests {
         let update =
             update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
 
-        assert!(!update.changed);
-        assert_eq!(existing.state, SessionState::Working);
-        assert_eq!(existing.detail.as_deref(), Some("Tool: shell_command"));
+        assert!(update.changed);
+        assert_eq!(existing.state, SessionState::Idle);
+        assert_eq!(
+            existing.detail.as_deref(),
+            Some("\u{5ba2}\u{6237}\u{7aef}\u{5df2}\u{8fde}\u{63a5}")
+        );
     }
 
     #[test]
@@ -762,6 +1137,407 @@ mod tests {
             sessions[0].detail,
             "\u{5ba2}\u{6237}\u{7aef}\u{6b63}\u{5728}\u{6267}\u{884c}\u{4efb}\u{52a1}"
         );
+    }
+
+    #[test]
+    fn marks_codex_client_working_when_shell_tool_descendant_is_active() {
+        let processes = vec![
+            ProcessRecord {
+                pid: 10,
+                parent_pid: Some(1),
+                name: "Codex.exe".to_string(),
+                command_line: r#""C:\Program Files\WindowsApps\OpenAI.Codex\app\Codex.exe""#
+                    .to_string(),
+            },
+            ProcessRecord {
+                pid: 20,
+                parent_pid: Some(10),
+                name: "codex.exe".to_string(),
+                command_line: r#""C:\Program Files\WindowsApps\OpenAI.Codex\app\resources\codex.exe" app-server --analytics-default-enabled"#.to_string(),
+            },
+            ProcessRecord {
+                pid: 30,
+                parent_pid: Some(20),
+                name: "powershell.exe".to_string(),
+                command_line: r#""C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "Get-ChildItem -Path src-tauri\target\release\bundle""#.to_string(),
+            },
+        ];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "process-codex-10");
+        assert_eq!(sessions[0].state, SessionState::Working);
+        assert_eq!(
+            sessions[0].detail,
+            "\u{5ba2}\u{6237}\u{7aef}\u{6b63}\u{5728}\u{6267}\u{884c}\u{4efb}\u{52a1}"
+        );
+    }
+
+    #[test]
+    fn marks_codex_client_working_when_unknown_tool_descendant_is_active() {
+        let processes = vec![
+            ProcessRecord {
+                pid: 10,
+                parent_pid: Some(1),
+                name: "Codex.exe".to_string(),
+                command_line: r#""C:\Program Files\OpenAI\Codex\Codex.exe""#.to_string(),
+            },
+            ProcessRecord {
+                pid: 20,
+                parent_pid: Some(10),
+                name: "codex.exe".to_string(),
+                command_line: r#""C:\OpenAI\Codex\codex.exe" app-server"#.to_string(),
+            },
+            ProcessRecord {
+                pid: 30,
+                parent_pid: Some(20),
+                name: "make.exe".to_string(),
+                command_line: "make build".to_string(),
+            },
+        ];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "process-codex-10");
+        assert_eq!(sessions[0].state, SessionState::Working);
+    }
+
+    #[test]
+    fn keeps_single_codex_client_when_helpers_are_detached() {
+        let processes = vec![
+            ProcessRecord {
+                pid: 10,
+                parent_pid: Some(1),
+                name: "Codex.exe".to_string(),
+                command_line: r#""C:\Program Files\OpenAI\Codex\Codex.exe""#.to_string(),
+            },
+            ProcessRecord {
+                pid: 20,
+                parent_pid: Some(2),
+                name: "codex.exe".to_string(),
+                command_line:
+                    r#""C:\OpenAI\Codex\codex.exe" app-server --analytics-default-enabled"#
+                        .to_string(),
+            },
+            ProcessRecord {
+                pid: 30,
+                parent_pid: Some(3),
+                name: "codex.exe".to_string(),
+                command_line: r#""C:\OpenAI\Codex\codex.exe" sandbox -- node kernel.js"#
+                    .to_string(),
+            },
+            ProcessRecord {
+                pid: 40,
+                parent_pid: Some(4),
+                name: "codex-command-runner.exe".to_string(),
+                command_line: "codex-command-runner --run".to_string(),
+            },
+        ];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "process-codex-10");
+        assert_eq!(sessions[0].state, SessionState::Idle);
+    }
+
+    #[test]
+    fn does_not_apply_detached_activity_to_single_codex_root() {
+        let processes = vec![
+            ProcessRecord {
+                pid: 10,
+                parent_pid: Some(1),
+                name: "Codex.exe".to_string(),
+                command_line: r#""C:\Program Files\OpenAI\Codex\Codex.exe""#.to_string(),
+            },
+            ProcessRecord {
+                pid: 40,
+                parent_pid: Some(4),
+                name: "codex-command-runner.exe".to_string(),
+                command_line: "codex-command-runner --run".to_string(),
+            },
+        ];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "process-codex-10");
+        assert_eq!(sessions[0].state, SessionState::Idle);
+    }
+
+    #[test]
+    fn uses_app_server_as_fallback_when_codex_root_is_missing() {
+        let processes = vec![
+            ProcessRecord {
+                pid: 20,
+                parent_pid: Some(2),
+                name: "codex.exe".to_string(),
+                command_line:
+                    r#""C:\OpenAI\Codex\codex.exe" app-server --analytics-default-enabled"#
+                        .to_string(),
+            },
+            ProcessRecord {
+                pid: 30,
+                parent_pid: Some(20),
+                name: "codex.exe".to_string(),
+                command_line: r#""C:\OpenAI\Codex\codex.exe" sandbox -- node kernel.js"#
+                    .to_string(),
+            },
+        ];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "process-codex-20");
+        assert_eq!(sessions[0].state, SessionState::Working);
+    }
+
+    #[test]
+    fn does_not_apply_detached_activity_to_multiple_codex_roots() {
+        let processes = vec![
+            ProcessRecord {
+                pid: 10,
+                parent_pid: Some(1),
+                name: "Codex.exe".to_string(),
+                command_line: r#""C:\Program Files\OpenAI\Codex\Codex.exe""#.to_string(),
+            },
+            ProcessRecord {
+                pid: 11,
+                parent_pid: Some(1),
+                name: "Codex.exe".to_string(),
+                command_line: r#""C:\Program Files\OpenAI\Codex\Codex.exe""#.to_string(),
+            },
+            ProcessRecord {
+                pid: 40,
+                parent_pid: Some(4),
+                name: "codex-command-runner.exe".to_string(),
+                command_line: "codex-command-runner --run".to_string(),
+            },
+        ];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions
+            .iter()
+            .all(|session| session.state == SessionState::Idle));
+    }
+
+    #[test]
+    fn detects_codex_active_helpers() {
+        let active_by_name = ProcessRecord {
+            pid: 1,
+            parent_pid: None,
+            name: "codex-command-runner.exe".to_string(),
+            command_line: "codex-command-runner".to_string(),
+        };
+        let active_windows_sandbox = ProcessRecord {
+            pid: 2,
+            parent_pid: None,
+            name: "codex.exe".to_string(),
+            command_line: r#""C:\OpenAI\Codex\codex.exe" sandbox -- node kernel.js"#.to_string(),
+        };
+        let active_unix_exec = ProcessRecord {
+            pid: 3,
+            parent_pid: None,
+            name: "codex".to_string(),
+            command_line: "/usr/local/bin/codex exec task".to_string(),
+        };
+        let app_server = ProcessRecord {
+            pid: 4,
+            parent_pid: None,
+            name: "codex.exe".to_string(),
+            command_line: r#""C:\OpenAI\Codex\codex.exe" app-server"#.to_string(),
+        };
+
+        assert!(is_active_codex_root_process(&active_by_name));
+        assert!(is_active_codex_root_process(&active_windows_sandbox));
+        assert!(is_active_codex_root_process(&active_unix_exec));
+        assert!(!is_active_codex_root_process(&app_server));
+    }
+
+    #[test]
+    fn merges_single_codex_hook_alias_into_detected_session() {
+        let now = chrono::Utc::now();
+        let mut sessions = HashMap::from([(
+            "process-codex-99".to_string(),
+            session(
+                "process-codex-99",
+                SessionState::NeedsInput,
+                Some("Permission: run command"),
+            ),
+        )]);
+        let mut discovered = vec![discovered_codex_session("process-codex-10")];
+        discovered[0]
+            .mergeable_codex_alias_ids
+            .push("process-codex-99".to_string());
+
+        let events = merge_single_codex_process_aliases(&mut sessions, &mut discovered, now);
+
+        assert!(sessions.is_empty());
+        assert_eq!(events.len(), 1);
+        assert_eq!(discovered[0].state, SessionState::NeedsInput);
+        assert_eq!(discovered[0].detail, "Permission: run command");
+    }
+
+    #[test]
+    fn alias_needs_input_does_not_override_error() {
+        let now = chrono::Utc::now();
+        let mut canonical = discovered_codex_session("process-codex-10");
+        let error_alias = session(
+            "process-codex-98",
+            SessionState::Error,
+            Some("Command failed"),
+        );
+        let needs_input_alias = session(
+            "process-codex-99",
+            SessionState::NeedsInput,
+            Some("Permission: run command"),
+        );
+
+        merge_codex_alias_state(&mut canonical, &error_alias, now);
+        merge_codex_alias_state(&mut canonical, &needs_input_alias, now);
+
+        assert_eq!(canonical.state, SessionState::Error);
+        assert_eq!(canonical.detail, "Command failed");
+    }
+
+    #[test]
+    fn discovers_node_hosted_codex_as_root_session() {
+        let processes = vec![ProcessRecord {
+            pid: 10,
+            parent_pid: Some(1),
+            name: "node".to_string(),
+            command_line: "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js".to_string(),
+        }];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "process-codex-10");
+        assert_eq!(sessions[0].state, SessionState::Idle);
+    }
+
+    #[test]
+    fn discovers_windows_node_hosted_codex_as_root_session() {
+        let processes = vec![ProcessRecord {
+            pid: 10,
+            parent_pid: Some(1),
+            name: "node.exe".to_string(),
+            command_line: r#"node.exe C:\npm\node_modules\@openai\codex\bin\codex.js"#.to_string(),
+        }];
+
+        let sessions = discover_cli_sessions_from_processes(&processes, 999);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "process-codex-10");
+        assert_eq!(sessions[0].state, SessionState::Idle);
+    }
+
+    #[test]
+    fn authoritative_alias_updates_existing_needs_input_session() {
+        let mut existing = session(
+            "process-codex-10",
+            SessionState::NeedsInput,
+            Some("Permission: old command"),
+        );
+        let mut discovered = discovered_working_codex_session("process-codex-10");
+        discovered.has_authoritative_alias_state = true;
+        discovered.detail = "Tool: shell_command".to_string();
+
+        let update =
+            update_detected_process_session(&mut existing, &discovered, chrono::Utc::now());
+
+        assert!(update.changed);
+        assert_eq!(existing.state, SessionState::Working);
+        assert_eq!(existing.detail.as_deref(), Some("Tool: shell_command"));
+    }
+
+    #[test]
+    fn alias_working_does_not_override_needs_input() {
+        let now = chrono::Utc::now();
+        let mut canonical = discovered_codex_session("process-codex-10");
+        let needs_input_alias = session(
+            "process-codex-98",
+            SessionState::NeedsInput,
+            Some("Permission: run command"),
+        );
+        let working_alias = session(
+            "process-codex-99",
+            SessionState::Working,
+            Some("Tool: shell_command"),
+        );
+
+        merge_codex_alias_state(&mut canonical, &needs_input_alias, now);
+        merge_codex_alias_state(&mut canonical, &working_alias, now);
+
+        assert_eq!(canonical.state, SessionState::NeedsInput);
+        assert_eq!(canonical.detail, "Permission: run command");
+    }
+
+    #[test]
+    fn does_not_merge_alias_when_unattached_app_server_exists() {
+        let processes = vec![
+            ProcessRecord {
+                pid: 10,
+                parent_pid: Some(1),
+                name: "Codex.exe".to_string(),
+                command_line: r#""C:\Program Files\OpenAI\Codex\Codex.exe""#.to_string(),
+            },
+            ProcessRecord {
+                pid: 30,
+                parent_pid: Some(3),
+                name: "codex.exe".to_string(),
+                command_line:
+                    r#""C:\OpenAI\Codex\codex.exe" app-server --analytics-default-enabled"#
+                        .to_string(),
+            },
+        ];
+        let mut discovered = discover_cli_sessions_from_processes(&processes, 999);
+        let mut sessions = HashMap::from([(
+            "process-codex-30".to_string(),
+            session(
+                "process-codex-30",
+                SessionState::NeedsInput,
+                Some("Permission: run command"),
+            ),
+        )]);
+
+        let events =
+            merge_single_codex_process_aliases(&mut sessions, &mut discovered, chrono::Utc::now());
+
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].id, "process-codex-10");
+        assert!(!discovered[0].allow_single_codex_alias_merge);
+        assert!(events.is_empty());
+        assert_eq!(sessions.len(), 1);
+    }
+
+    #[test]
+    fn does_not_merge_codex_alias_when_multiple_codex_roots_exist() {
+        let now = chrono::Utc::now();
+        let mut sessions = HashMap::from([(
+            "process-codex-99".to_string(),
+            session(
+                "process-codex-99",
+                SessionState::NeedsInput,
+                Some("Permission: run command"),
+            ),
+        )]);
+        let mut discovered = vec![
+            discovered_codex_session("process-codex-10"),
+            discovered_codex_session("process-codex-11"),
+        ];
+
+        let events = merge_single_codex_process_aliases(&mut sessions, &mut discovered, now);
+
+        assert_eq!(sessions.len(), 1);
+        assert!(events.is_empty());
+        assert!(discovered
+            .iter()
+            .all(|session| session.state == SessionState::Idle));
     }
 
     #[test]

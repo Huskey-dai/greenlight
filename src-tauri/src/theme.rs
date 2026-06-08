@@ -2,13 +2,6 @@
 use tauri::Emitter;
 use tauri::Listener;
 
-/// Get the current OS theme preference.
-pub fn current_theme() -> String {
-    // Tauri provides system theme detection
-    // This will be called on startup and when changes are detected
-    "light".to_string() // Default, will be overridden by actual detection
-}
-
 /// Start listening for OS theme changes and emit them to the frontend.
 pub fn start_theme_listener(app: &tauri::AppHandle) {
     let app_handle = app.clone();

@@ -123,7 +123,7 @@ async fn update_session_state(
         body.source.clone(),
     );
     let current = app_state.sessions.get(&session_id).cloned();
-    if previous.as_ref().map_or(true, |session| {
+    if previous.as_ref().is_none_or(|session| {
         session.state != body.state || session.detail != body.detail
     }) {
         if let Some(session) = current {

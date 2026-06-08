@@ -183,7 +183,7 @@ async fn get_diagnostics(
         let updated_at = session.updated_at.to_rfc3339();
         if latest_update
             .as_ref()
-            .map_or(true, |current: &String| updated_at > *current)
+            .is_none_or(|current: &String| updated_at > *current)
         {
             latest_update = Some(updated_at);
         }
